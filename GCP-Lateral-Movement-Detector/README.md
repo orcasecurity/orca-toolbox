@@ -6,9 +6,7 @@ It is based on the misconfiguration of a compute engine instance configured with
 
 Deploying compute engine instances with permissive permissions of the default service account is a bad practice and should be avoided at all times.
 
-Review the output to easily analyze this misconfiguration in order to prevent attackers from spread in your GCP environment and stay safe!
-
-For more information on the service account misconfiguration and how to exploit it - see the blog post on Orca Security blog.
+Review the output to easily analyze this misconfiguration in order to prevent attackers from spread in your GCP environment.
 
 # Disclaimer
 This tool is for testing and educational purposes only. 
