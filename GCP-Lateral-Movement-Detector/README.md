@@ -24,6 +24,9 @@ https://cloud.google.com/sdk/docs/install
 
 2. Sudo apt-get install jq
 
+# Usage 
+./gcp-lateral-movement-detector.sh -o results.txt
+
 # TODO
 Add iteration for organizations level
 
