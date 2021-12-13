@@ -1,12 +1,12 @@
 # GCP Lateral Movement Detector 
 
-The script iterates through all the available projects (according to your token's access level) in your GCP account and extracts the compute engine instances that can access all compute engine instances in it's project's scope (e.g. can use the command gcloud compute ssh to acceess other VMs in the same project).
+The script iterates through all the available projects (according to your token's access level) in your GCP account and extracts the compute engine instances that can access all compute engine instances in it's project's scope (e.g. can use the command gcloud compute ssh to access other VMs in the same project).
 
 It is based on the misconfiguration of a compute engine instance configured with the default service account (with editor role) and all cloud api access scope.
 
 Deploying compute engine instances with permissive permissions of the default service account is a bad practice and should be avoided at all times.
 
-Review the output to easily analyze this misconfiguration in order to prevent attackers from spread in your GCP environment.
+Examine the results to quickly identify this misconfiguration and prevent attackers from spreading throughout your GCP environment.
 
 # Disclaimer
 This tool is for testing and educational purposes only. 
