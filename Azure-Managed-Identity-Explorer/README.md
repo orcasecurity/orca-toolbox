@@ -18,6 +18,8 @@ By using this you accept the fact that any damage caused by the use of this tool
 ## Installation 
 The tool is packaged as .whl file and can be installed using pip
 
+pip3 install Azure_Managed_Identity_Explorer-0.1.0-py3-none-any.whl
+
 
 ## Dependencies
 The following python modules are necessary:
