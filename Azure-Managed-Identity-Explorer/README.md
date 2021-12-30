@@ -16,7 +16,7 @@ By using this you accept the fact that any damage caused by the use of this tool
 
 
 ## Installation 
-The tools is packaged as .whl file and can be installed using pip
+The tool is packaged as .whl file and can be installed using pip
 
 
 ## Dependencies
