@@ -3,7 +3,7 @@ from distutils.core import setup
 setup(
     name="oci_enum",
     packages=["oci_enum"],
-    version="0.1",
+    version="0.1.1",
     license="MIT",
     description="CLI Tool by Orca Security to enumerate services in Oracle Cloud Infrastructure",
     author="Lidor Ben Shitrit, Tohar Braun",

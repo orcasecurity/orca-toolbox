@@ -1,6 +1,6 @@
 
 ## Orca Oracle Enumeration Tool ##
-![oci-enum](oci-enum.jpg)
+![oci-enum](https://github.com/orcasecurity/orca-toolbox/raw/main/oci_enum/oci-enum.jpg)
 
 
 ## Disclaimer ##
@@ -19,14 +19,14 @@ To obtain an instance's identity file, log on to the instance, and use `wget` (o
 ## Setup ##
 
 ### From PyPi ###
-1. `pip install orca_oci_enum`
-2. `oci-enum`
+1. Run `pip install oci-enum`
+2. Run `oci-enum`
 
 ### From git
 1. Clone this repository
 2. Change directory to oci_enum
-3. run `python setup.py install`
-4. `oci-enum`
+3. Run `python setup.py install`
+4. Run `oci-enum`
 
 ## To do ##
 1. Add support for additional services

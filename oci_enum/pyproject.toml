@@ -1,6 +1,6 @@
 [project]
 name = "oci_enum"
-version = "0.1.0"
+version = "0.1.1"
 description = "CLI Tool by Orca Security to enumerate services in Oracle Cloud Infrastructure"
 
 [dependencies]
