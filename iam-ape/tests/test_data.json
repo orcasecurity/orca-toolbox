@@ -1,0 +1,491 @@
+{
+    "UserDetailList": [
+        {
+            "Path": "/",
+            "UserName": "TestUser1",
+            "UserId": "AIDAXL25HVHC433OBTMDV",
+            "Arn": "arn:aws:iam::123456789012:user/TestUser1",
+            "CreateDate": "2023-01-04T14:23:27+00:00",
+            "UserPolicyList": [
+                {
+                    "PolicyName": "ec2_full_access",
+                    "PolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Sid": "VisualEditor0",
+                                "Effect": "Allow",
+                                "Action": "ec2:*",
+                                "Resource": "*"
+                            }
+                        ]
+                    }
+                }
+            ],
+            "GroupList": [
+                "IAMAdmins",
+                "CF-Bucket-Viewers"
+            ],
+            "AttachedManagedPolicies": [
+                {
+                    "PolicyName": "AmazonESFullAccess",
+                    "PolicyArn": "arn:aws:iam::aws:policy/AmazonESFullAccess"
+                }
+            ],
+            "PermissionsBoundary": {
+                "PermissionsBoundaryType": "Policy",
+                "PermissionsBoundaryArn": "arn:aws:iam::123456789012:policy/Disallow_IAM_Permission_Boundary"
+            },
+            "Tags": []
+        }
+    ],
+    "GroupDetailList": [
+        {
+            "Path": "/",
+            "GroupName": "CF-Bucket-Viewers",
+            "GroupId": "AGPAXL25HVHCWZYT2VNYR",
+            "Arn": "arn:aws:iam::123456789012:group/CF-Bucket-Viewers",
+            "CreateDate": "2023-01-04T14:23:09+00:00",
+            "GroupPolicyList": [],
+            "AttachedManagedPolicies": [
+                {
+                    "PolicyName": "view-cf-bucket",
+                    "PolicyArn": "arn:aws:iam::123456789012:policy/view-cf-bucket"
+                }
+            ]
+        },
+        {
+            "Path": "/",
+            "GroupName": "IAMAdmins",
+            "GroupId": "AGPAXL25HVHCW3RXA5I5P",
+            "Arn": "arn:aws:iam::123456789012:group/IAMAdmins",
+            "CreateDate": "2023-01-04T14:29:04+00:00",
+            "GroupPolicyList": [],
+            "AttachedManagedPolicies": [
+                {
+                    "PolicyName": "IAMFullAccess",
+                    "PolicyArn": "arn:aws:iam::aws:policy/IAMFullAccess"
+                }
+            ]
+        }
+    ],
+    "RoleDetailList": [
+        {
+            "Path": "/",
+            "RoleName": "ConditionalRole",
+            "RoleId": "AROAXL25HVHCULEN4NVB6",
+            "Arn": "arn:aws:iam::123456789012:role/ConditionalRole",
+            "CreateDate": "2022-09-06T11:22:32+00:00",
+            "AssumeRolePolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "AWS": "arn:aws:iam::123456789012:root"
+                        },
+                        "Action": "sts:AssumeRole",
+                        "Condition": {}
+                    }
+                ]
+            },
+            "InstanceProfileList": [],
+            "RolePolicyList": [],
+            "AttachedManagedPolicies": [
+                {
+                    "PolicyName": "ConditionalPolicy",
+                    "PolicyArn": "arn:aws:iam::123456789012:policy/ConditionalPolicy"
+                }
+            ],
+            "Tags": [],
+            "RoleLastUsed": {}
+        },
+        {
+            "Path": "/",
+            "RoleName": "DevOps_admin",
+            "RoleId": "AROAXL25HVHC62WTAJD4X",
+            "Arn": "arn:aws:iam::123456789012:role/DevOps_admin",
+            "CreateDate": "2022-02-01T11:15:15+00:00",
+            "AssumeRolePolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": "ec2.amazonaws.com"
+                        },
+                        "Action": "sts:AssumeRole"
+                    }
+                ]
+            },
+            "InstanceProfileList": [
+                {
+                    "Path": "/",
+                    "InstanceProfileName": "DevOps_admin",
+                    "InstanceProfileId": "AIPAXL25HVHCRJYK6K5Y4",
+                    "Arn": "arn:aws:iam::123456789012:instance-profile/DevOps_admin",
+                    "CreateDate": "2022-02-01T11:15:15+00:00",
+                    "Roles": [
+                        {
+                            "Path": "/",
+                            "RoleName": "DevOps_admin",
+                            "RoleId": "AROAXL25HVHC62WTAJD4X",
+                            "Arn": "arn:aws:iam::123456789012:role/DevOps_admin",
+                            "CreateDate": "2022-02-01T11:15:15+00:00",
+                            "AssumeRolePolicyDocument": {
+                                "Version": "2012-10-17",
+                                "Statement": [
+                                    {
+                                        "Effect": "Allow",
+                                        "Principal": {
+                                            "Service": "ec2.amazonaws.com"
+                                        },
+                                        "Action": "sts:AssumeRole"
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ],
+            "RolePolicyList": [],
+            "AttachedManagedPolicies": [
+                {
+                    "PolicyName": "AdministratorAccess",
+                    "PolicyArn": "arn:aws:iam::aws:policy/AdministratorAccess"
+                }
+            ],
+            "Tags": [],
+            "RoleLastUsed": {}
+        }
+    ],
+    "Policies": [
+        {
+            "PolicyName": "view-cf-bucket",
+            "PolicyId": "ANPAXL25HVHCXKQZXNIBD",
+            "Arn": "arn:aws:iam::123456789012:policy/view-cf-bucket",
+            "Path": "/",
+            "DefaultVersionId": "v1",
+            "AttachmentCount": 1,
+            "PermissionsBoundaryUsageCount": 0,
+            "IsAttachable": true,
+            "CreateDate": "2023-01-04T14:22:27+00:00",
+            "UpdateDate": "2023-01-04T14:22:27+00:00",
+            "PolicyVersionList": [
+                {
+                    "Document": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Sid": "VisualEditor0",
+                                "Effect": "Allow",
+                                "Action": [
+                                    "s3:GetObject",
+                                    "s3:ListBucket"
+                                ],
+                                "Resource": [
+                                    "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1",
+                                    "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1/*"
+                                ]
+                            }
+                        ]
+                    },
+                    "VersionId": "v1",
+                    "IsDefaultVersion": true,
+                    "CreateDate": "2023-01-04T14:22:27+00:00"
+                }
+            ]
+        },
+        {
+            "PolicyName": "IAMFullAccess",
+            "PolicyId": "ANPAI7XKCFMBPM3QQRRVQ",
+            "Arn": "arn:aws:iam::aws:policy/IAMFullAccess",
+            "Path": "/",
+            "DefaultVersionId": "v2",
+            "AttachmentCount": 2,
+            "PermissionsBoundaryUsageCount": 0,
+            "IsAttachable": true,
+            "CreateDate": "2015-02-06T18:40:38+00:00",
+            "UpdateDate": "2019-06-21T19:40:00+00:00",
+            "PolicyVersionList": [
+                {
+                    "Document": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Action": [
+                                    "iam:*",
+                                    "organizations:DescribeAccount",
+                                    "organizations:DescribeOrganization",
+                                    "organizations:DescribeOrganizationalUnit",
+                                    "organizations:DescribePolicy",
+                                    "organizations:ListChildren",
+                                    "organizations:ListParents",
+                                    "organizations:ListPoliciesForTarget",
+                                    "organizations:ListRoots",
+                                    "organizations:ListPolicies",
+                                    "organizations:ListTargetsForPolicy"
+                                ],
+                                "Resource": "*"
+                            }
+                        ]
+                    },
+                    "VersionId": "v2",
+                    "IsDefaultVersion": true,
+                    "CreateDate": "2019-06-21T19:40:00+00:00"
+                },
+                {
+                    "Document": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "iam:*",
+                                "Resource": "*"
+                            }
+                        ]
+                    },
+                    "VersionId": "v1",
+                    "IsDefaultVersion": false,
+                    "CreateDate": "2015-02-06T18:40:38+00:00"
+                }
+            ]
+        },
+        {
+            "PolicyName": "AdministratorAccess",
+            "PolicyId": "ANPAIWMBCKSKIEE64ZLYK",
+            "Arn": "arn:aws:iam::aws:policy/AdministratorAccess",
+            "Path": "/",
+            "DefaultVersionId": "v1",
+            "AttachmentCount": 10,
+            "PermissionsBoundaryUsageCount": 0,
+            "IsAttachable": true,
+            "CreateDate": "2015-02-06T18:39:46+00:00",
+            "UpdateDate": "2015-02-06T18:39:46+00:00",
+            "PolicyVersionList": [
+                {
+                    "Document": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "*",
+                                "Resource": "*"
+                            }
+                        ]
+                    },
+                    "VersionId": "v1",
+                    "IsDefaultVersion": true,
+                    "CreateDate": "2015-02-06T18:39:46+00:00"
+                }
+            ]
+        },
+        {
+            "PolicyName": "Disallow_IAM_Permission_Boundary",
+            "PolicyId": "ANPAXL25HVHC2BBO7F4YG",
+            "Arn": "arn:aws:iam::123456789012:policy/Disallow_IAM_Permission_Boundary",
+            "Path": "/",
+            "DefaultVersionId": "v4",
+            "AttachmentCount": 0,
+            "PermissionsBoundaryUsageCount": 1,
+            "IsAttachable": true,
+            "CreateDate": "2023-01-04T14:26:29+00:00",
+            "UpdateDate": "2023-01-04T19:15:54+00:00",
+            "PolicyVersionList": [
+                {
+                    "Document": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Sid": "VisualEditor0",
+                                "Effect": "Deny",
+                                "Action": [
+                                    "iam:*"
+                                ],
+                                "Resource": "*"
+                            },
+                            {
+                                "Sid": "VisualEditor1",
+                                "Effect": "Allow",
+                                "Action": "ec2:*",
+                                "Resource": "*",
+                                "Condition": {
+                                    "StringEquals": {
+                                        "aws:RequestedRegion": [
+                                            "us-east-1"
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "Sid": "VisualEditor2",
+                                "Effect": "Allow",
+                                "NotAction": [
+                                    "iam:*",
+                                    "ec2:*"
+                                ],
+                                "Resource": "*"
+                            }
+                        ]
+                    },
+                    "VersionId": "v4",
+                    "IsDefaultVersion": true,
+                    "CreateDate": "2023-01-04T19:15:54+00:00"
+                },
+                {
+                    "Document": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Sid": "VisualEditor0",
+                                "Effect": "Deny",
+                                "NotAction": [
+                                    "iam:*"
+                                ],
+                                "Resource": "*"
+                            },
+                            {
+                                "Sid": "VisualEditor1",
+                                "Effect": "Allow",
+                                "Action": "ec2:*",
+                                "Resource": "*",
+                                "Condition": {
+                                    "StringEquals": {
+                                        "aws:RequestedRegion": [
+                                            "us-east-1"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "VersionId": "v3",
+                    "IsDefaultVersion": false,
+                    "CreateDate": "2023-01-04T18:55:27+00:00"
+                },
+                {
+                    "Document": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Sid": "VisualEditor0",
+                                "Effect": "Allow",
+                                "NotAction": [
+                                    "iam:*",
+                                    "ec2:*"
+                                ],
+                                "Resource": "*"
+                            },
+                            {
+                                "Sid": "VisualEditor1",
+                                "Effect": "Allow",
+                                "NotAction": "ec2:*",
+                                "Resource": "*",
+                                "Condition": {
+                                    "StringEquals": {
+                                        "aws:RequestedRegion": [
+                                            "us-east-1"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "VersionId": "v2",
+                    "IsDefaultVersion": false,
+                    "CreateDate": "2023-01-04T14:36:29+00:00"
+                },
+                {
+                    "Document": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Sid": "VisualEditor0",
+                                "Effect": "Allow",
+                                "NotAction": "iam:*",
+                                "Resource": "*"
+                            }
+                        ]
+                    },
+                    "VersionId": "v1",
+                    "IsDefaultVersion": false,
+                    "CreateDate": "2023-01-04T14:26:29+00:00"
+                }
+            ]
+        },
+        {
+            "PolicyName": "ConditionalPolicy",
+            "PolicyId": "ANPAXL25HVHC7NA7JHKHH",
+            "Arn": "arn:aws:iam::123456789012:policy/ConditionalPolicy",
+            "Path": "/",
+            "DefaultVersionId": "v1",
+            "AttachmentCount": 4,
+            "PermissionsBoundaryUsageCount": 0,
+            "IsAttachable": true,
+            "CreateDate": "2022-09-06T10:38:01+00:00",
+            "UpdateDate": "2022-09-06T10:38:01+00:00",
+            "PolicyVersionList": [
+                {
+                    "Document": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Sid": "VisualEditor0",
+                                "Effect": "Allow",
+                                "Action": "lambda:*",
+                                "Resource": "*"
+                            },
+                            {
+                                "Sid": "VisualEditor1",
+                                "Effect": "Allow",
+                                "Action": "s3:*",
+                                "Resource": "*",
+                                "Condition": {
+                                    "StringLike": {
+                                        "aws:username": "Lior*"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "VersionId": "v1",
+                    "IsDefaultVersion": true,
+                    "CreateDate": "2022-09-06T10:38:01+00:00"
+                }
+            ]
+        },
+        {
+            "PolicyName": "AmazonESFullAccess",
+            "PolicyId": "ANPAJM6ZTCU24QL5PZCGC",
+            "Arn": "arn:aws:iam::aws:policy/AmazonESFullAccess",
+            "Path": "/",
+            "DefaultVersionId": "v1",
+            "AttachmentCount": 1,
+            "PermissionsBoundaryUsageCount": 0,
+            "IsAttachable": true,
+            "Description": "Provides full access to the Amazon ES configuration service.",
+            "CreateDate": "2015-10-01T19:14:00+00:00",
+            "UpdateDate": "2015-10-01T19:14:00+00:00",
+            "PolicyVersionList": [
+                {
+                    "Document": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Action": [
+                                    "es:*"
+                                ],
+                                "Effect": "Allow",
+                                "Resource": "*"
+                            }
+                        ]
+                    },
+                    "VersionId": "v1",
+                    "IsDefaultVersion": true,
+                    "CreateDate": "2015-02-06T18:40:38+00:00"
+                }
+            ]
+        }
+    ]
+}

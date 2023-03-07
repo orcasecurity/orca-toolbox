@@ -1,0 +1,43 @@
+name: Unit Tests
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - 'iam-ape/*'
+  workflow_dispatch:
+
+
+jobs:
+  code-static-typing-and-linter:
+    name: Static Typing and Linter
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      working-directory: ./iam-ape
+      run: |
+        python -m pip install --upgrade pip poetry
+        poetry install
+    - name: Linter and Static Typing Check
+      working-directory: ./iam-ape
+      shell: bash
+      run: |
+        poetry run mypy .
+        poetry run flake8 --extend-ignore W291,W605 --max-line-length 120 .
+        poetry run isort . --check --diff --profile black
+        poetry run black --check .
+    - name: Test with pytest
+      run: |
+        pip install pytest
+        pytest

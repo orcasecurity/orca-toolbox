@@ -1,0 +1,43 @@
+[tool.poetry]
+name = "iam-ape"
+version = "1.0.0"
+description = "IAM AWS Permissions Evaluator"
+authors = ["Tohar Braun, Orca Security <tohar@orca.security>"]
+license = "GPL-3.0-or-later"
+readme = "README.md"
+homepage = "https://github.com/orcasecurity/orca-toolbox/raw/main/iam-ape/"
+repository = "https://github.com/orcasecurity/orca-toolbox/raw/main/iam-ape/"
+keywords = ["aws", "iam"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+boto3 = "^1.26.50"
+requests = "^2.28.2"
+beautifulsoup4 = "^4.11.1"
+tqdm = "^4.64.1"
+
+[tool.poetry.group.dev.dependencies]
+black = "^22.12.0"
+pytest = "^7.2.1"
+types-requests = "^2.28.11.12"
+mypy = "^1.1.1"
+flake8 = "^6.0.0"
+isort = "^5.12.0"
+
+[tool.setuptools.package-data]
+iam-ape = ["iam_ape/aws_iam_actions/*.tar.gz"]
+
+[tool.poetry.scripts]
+iam-ape = "iam_ape.main:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
