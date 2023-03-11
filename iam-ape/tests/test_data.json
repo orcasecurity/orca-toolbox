@@ -24,7 +24,8 @@
             ],
             "GroupList": [
                 "IAMAdmins",
-                "CF-Bucket-Viewers"
+                "CF-Bucket-Viewers",
+                "Require_MFA"
             ],
             "AttachedManagedPolicies": [
                 {
@@ -67,6 +68,46 @@
                     "PolicyArn": "arn:aws:iam::aws:policy/IAMFullAccess"
                 }
             ]
+        },
+        {
+            "Path": "/",
+            "GroupName": "Require_MFA",
+            "GroupId": "AGPAXL25HVHCWZYT2VNYR",
+            "Arn": "arn:aws:iam::123456789012:group/Require_MFA",
+            "CreateDate": "2023-01-04T14:23:09+00:00",
+            "GroupPolicyList": [
+                {
+                    "PolicyDocument": {
+                        "Statement": {
+                            "Sid": "BlockMostAccessUnlessSignedInWithMFA",
+                            "Effect": "Deny",
+                            "NotAction": [
+                                "iam:CreateVirtualMFADevice",
+                                "iam:DeleteVirtualMFADevice",
+                                "iam:ListVirtualMFADevices",
+                                "iam:EnableMFADevice",
+                                "iam:ResyncMFADevice",
+                                "iam:ListAccountAliases",
+                                "iam:ListUsers",
+                                "iam:ListSSHPublicKeys",
+                                "iam:ListAccessKeys",
+                                "iam:ListServiceSpecificCredentials",
+                                "iam:ListMFADevices",
+                                "iam:GetAccountSummary",
+                                "sts:GetSessionToken"
+                            ],
+                            "Resource": "*",
+                            "Condition": {
+                                "Bool": {
+                                    "aws:MultiFactorAuthPresent": "false",
+                                    "aws:ViaAWSService": "false"
+                                }
+                            }
+                        }
+                    }
+                }
+            ],
+            "AttachedManagedPolicies": []
         }
     ],
     "RoleDetailList": [

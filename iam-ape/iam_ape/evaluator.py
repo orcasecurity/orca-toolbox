@@ -516,59 +516,24 @@ class EffectivePolicyEvaluator:
 
         return permissions
 
-    def _handle_user_groups(
-        self,
-        entity_obj: Dict[str, Any],
-        final_permissions: Dict[str, Set[Action]],
-        direct_permissions: PermissionsContainer,
-    ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
-        # Add to the user's permissions
-        for group in entity_obj.get("GroupList", []):
-            group_arn = re.sub(":user/.*", f":group/{group}", entity_obj["Arn"])
-            group_permissions = self.evaluate(group_arn, EntityType.group)
-            for key, action_tuple_set in group_permissions.allowed_permissions.items():
-                new_set = set()
-                for action_tuple in action_tuple_set:
-                    new_set.add(
-                        replace(
-                            action_tuple,
-                            source=action_tuple.source + f' via IAM Group "{group}"',
-                        )
-                    )
-                group_permissions.allowed_permissions[key] = new_set
-            final_permissions = deep_update(
-                final_permissions, group_permissions.allowed_permissions
-            )
-
-        # Ensure no denied permissions were added
-        final_permissions, ineffective_permissions = explicitly_deny(
-            PermissionsContainer(
-                allowed_permissions=final_permissions,
-                denied_permissions=direct_permissions.denied_permissions,
-            )
-        )
-
-        return final_permissions, ineffective_permissions
-
     def evaluate(self, arn: str, entity_type: EntityType):
         entity_obj = getattr(self.auth_details, entity_type.value).get(arn)
         if not entity_obj:
             logger.error(f"Error - couldn't find entity with ARN {arn}")
             raise ValueError(f"couldn't find entity with ARN {arn}")
+
         direct_policies = self.get_direct_policies(entity_obj, entity_type)
-        direct_permissions = self.policy_expander.expand_policies(direct_policies)
+        indirect_policies: List[PolicyWithSource] = []
+        if entity_type == EntityType.user:
+            for group in entity_obj.get("GroupList", []):
+                group_arn = re.sub(":user/.*", f":group/{group}", entity_obj["Arn"])
+                group_obj = self.auth_details.Group[group_arn]
+                indirect_policies.extend(self.get_direct_policies(group_obj, EntityType.group))
+
+        direct_permissions = self.policy_expander.expand_policies(direct_policies + indirect_policies)
         permission_boundary = self.get_permission_boundary(entity_obj)
 
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
-
-        if entity_type == EntityType.user:
-            (
-                final_permissions,
-                user_groups_ineffective_permissions,
-            ) = self._handle_user_groups(
-                entity_obj, final_permissions, direct_permissions
-            )
-            ineffective_permissions.update(user_groups_ineffective_permissions)
 
         if (
             permission_boundary.allowed_permissions

@@ -10,7 +10,19 @@ expected_result = {
             "Effect": "Allow",
             "Action": ["ec2:*"],
             "Resource": ["*"],
-            "Condition": {"StringEquals": {"aws:RequestedRegion": ["us-east-1"]}},
+            "Condition": {
+                "StringEquals": {
+                    "aws:RequestedRegion": ["us-east-1"]
+                },
+                "Bool": {
+                    "aws:MultiFactorAuthPresent": [
+                        "true"
+                    ],
+                    "aws:ViaAWSService": [
+                        "true"
+                    ]
+                }
+            },
         },
         {
             "Effect": "Allow",
@@ -28,6 +40,16 @@ expected_result = {
                 "es:*",
             ],
             "Resource": ["*"],
+            "Condition": {
+                "Bool": {
+                    "aws:MultiFactorAuthPresent": [
+                        "true"
+                    ],
+                    "aws:ViaAWSService": [
+                        "true"
+                    ]
+                }
+            }
         },
         {
             "Effect": "Allow",
@@ -36,6 +58,16 @@ expected_result = {
                 "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1",
                 "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1/*",
             ],
+            "Condition": {
+                "Bool": {
+                    "aws:MultiFactorAuthPresent": [
+                        "true"
+                    ],
+                    "aws:ViaAWSService": [
+                        "true"
+                    ]
+                }
+            }
         },
     ]
 }
@@ -47,7 +79,7 @@ def test_e2e() -> None:
     auth_details = AuthorizationDetails(data)
 
     assert len(auth_details.User) == 1
-    assert len(auth_details.Group) == 2
+    assert len(auth_details.Group) == 3
     assert len(auth_details.Role) == 2
     assert len(auth_details.Policy) == 6
 
@@ -57,7 +89,7 @@ def test_e2e() -> None:
     )
 
     assert len(res.allowed_permissions) == 681
-    assert len(res.denied_permissions) == 170
+    assert len(res.denied_permissions) == 13445
     assert len(res.ineffective_permissions) == 170
 
     minimized_policy = evaluator.policy_expander.shrink_policy(res.allowed_permissions)

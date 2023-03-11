@@ -1,8 +1,9 @@
 import logging
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Set, TypeVar
 
 from iam_ape.consts import CONDITIONS_NEGATIONS
-from iam_ape.helper_types import AwsPolicyType, HashableDict
+from iam_ape.helper_types import AwsPolicyType, HashableDict, HashableList
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +107,9 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
 
 
 def negate_condition(condition: Dict[str, Any]) -> Dict[str, Any]:
+    res_condition = deepcopy(condition)
     condition_prefix = ""
-    condition_key, condition_value = list(condition.items())[0]
+    condition_key, condition_value = list(res_condition.items())[0]
 
     if negated := CONDITIONS_NEGATIONS.get(condition_key):
         return {negated: condition_value}
@@ -128,13 +130,13 @@ def negate_condition(condition: Dict[str, Any]) -> Dict[str, Any]:
             return {f"{negated}IfExists": condition_value}
 
     if condition_key.lower() in ("bool", "null"):
-        condition_value = as_list(condition_value)
-        for condition_items in condition_value:
-            for key, val in condition_items.items():
-                if val.lower() == "false":
-                    condition_items[key] = "true"
-                else:
-                    condition_items[key] = "false"
+        for _condition, _values in condition_value.items():
+            if all(v.lower() == "false" for v in _values):
+                condition_value[_condition] = HashableList(["true"])
+            elif all(v.lower() == "true" for v in _values):
+                condition_value[_condition] = HashableList(["false"])
+            else:
+                condition_value[_condition] = HashableList(["true", "false"])
 
     if condition_key == "BinaryEquals":  # there is no bloody negation
         logger.info(f"BinaryEquals used in a deny condition: {condition}")
