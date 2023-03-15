@@ -11,17 +11,11 @@ expected_result = {
             "Action": ["ec2:*"],
             "Resource": ["*"],
             "Condition": {
-                "StringEquals": {
-                    "aws:RequestedRegion": ["us-east-1"]
-                },
+                "StringEquals": {"aws:RequestedRegion": ["us-east-1"]},
                 "Bool": {
-                    "aws:MultiFactorAuthPresent": [
-                        "true"
-                    ],
-                    "aws:ViaAWSService": [
-                        "true"
-                    ]
-                }
+                    "aws:MultiFactorAuthPresent": ["true"],
+                    "aws:ViaAWSService": ["true"],
+                },
             },
         },
         {
@@ -42,14 +36,10 @@ expected_result = {
             "Resource": ["*"],
             "Condition": {
                 "Bool": {
-                    "aws:MultiFactorAuthPresent": [
-                        "true"
-                    ],
-                    "aws:ViaAWSService": [
-                        "true"
-                    ]
+                    "aws:MultiFactorAuthPresent": ["true"],
+                    "aws:ViaAWSService": ["true"],
                 }
-            }
+            },
         },
         {
             "Effect": "Allow",
@@ -60,14 +50,10 @@ expected_result = {
             ],
             "Condition": {
                 "Bool": {
-                    "aws:MultiFactorAuthPresent": [
-                        "true"
-                    ],
-                    "aws:ViaAWSService": [
-                        "true"
-                    ]
+                    "aws:MultiFactorAuthPresent": ["true"],
+                    "aws:ViaAWSService": ["true"],
                 }
-            }
+            },
         },
     ]
 }
