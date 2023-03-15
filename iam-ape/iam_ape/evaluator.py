@@ -528,9 +528,13 @@ class EffectivePolicyEvaluator:
             for group in entity_obj.get("GroupList", []):
                 group_arn = re.sub(":user/.*", f":group/{group}", entity_obj["Arn"])
                 group_obj = self.auth_details.Group[group_arn]
-                indirect_policies.extend(self.get_direct_policies(group_obj, EntityType.group))
+                indirect_policies.extend(
+                    self.get_direct_policies(group_obj, EntityType.group)
+                )
 
-        direct_permissions = self.policy_expander.expand_policies(direct_policies + indirect_policies)
+        direct_permissions = self.policy_expander.expand_policies(
+            direct_policies + indirect_policies
+        )
         permission_boundary = self.get_permission_boundary(entity_obj)
 
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
