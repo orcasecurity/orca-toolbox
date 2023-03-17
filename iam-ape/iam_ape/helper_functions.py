@@ -71,7 +71,7 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
         # }
         # As per https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html,
         # The "*" and {"AWS": "*"} statements in Principal are equivalent, so we convert to the latter
-        for field in ["Principal", "NotPrincipal"]:
+        for field in ("Principal", "NotPrincipal"):
             if not statement.get(field):
                 continue
             if statement[field] == "*":  # type: ignore
@@ -102,6 +102,18 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
             for condition_key, condition_value in condition_dict.items():
                 if not isinstance(condition_value, list):
                     statement["Condition"][condition_operator][condition_key] = [condition_value]  # type: ignore
+
+        for action_key in ("Action", "NotAction"):
+            if action_list := statement.get(action_key):
+                new_action_list = []
+                for action in action_list:
+                    if action.count(":") == 1:
+                        service, action_name = action.split(":")
+                        action = ':'.join([service.lower(), action_name])
+                        new_action_list.append(action)
+                    else:
+                        new_action_list.append(action)
+                statement[action_key] = new_action_list
 
     return policy
 
