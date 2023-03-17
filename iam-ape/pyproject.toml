@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "iam-ape"
-version = "1.0.2"
+version = "1.0.4"
 description = "IAM AWS Permissions Evaluator"
 authors = ["Tohar Braun, Orca Security <tohar@orca.security>"]
 license = "GPL-3.0-or-later"
@@ -18,19 +18,19 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-python = "^3.8.1"
-boto3 = "^1.26.50"
-requests = "^2.28.2"
-beautifulsoup4 = "^4.11.1"
-tqdm = "^4.64.1"
+python = "^3.8"
+boto3 = "^1.24.0"
+requests = "^2.27.1"
+beautifulsoup4 = "^4.8.2"
+tqdm = "^4.63.0"
 
 [tool.poetry.group.dev.dependencies]
-black = "^22.12.0"
+black = "^22.1.0"
 pytest = "^7.2.1"
 types-requests = "^2.28.11.12"
 mypy = "^1.1.1"
-flake8 = "^6.0.0"
-isort = "^5.12.0"
+flake8 = "*"
+isort = "*"
 
 [tool.setuptools.package-data]
 iam-ape = ["iam_ape/aws_iam_actions/*.tar.gz"]
