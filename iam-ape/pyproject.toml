@@ -33,7 +33,7 @@ flake8 = "*"
 isort = "*"
 
 [tool.setuptools.package-data]
-iam-ape = ["iam_ape/aws_iam_actions/*.tar.gz", "py.typed"]
+iam-ape = ["iam_ape/aws_iam_actions/*.tar.gz", "iam_ape/py.typed"]
 
 [tool.poetry.scripts]
 iam-ape = "iam_ape.main:main"
