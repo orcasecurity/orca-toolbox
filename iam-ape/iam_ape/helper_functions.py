@@ -1,6 +1,6 @@
 import logging
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Set, TypeVar
+from typing import Any, Dict, List, Literal, Optional, Set, TypeVar
 
 from iam_ape.consts import CONDITIONS_NEGATIONS
 from iam_ape.helper_types import AwsPolicyType, HashableDict, HashableList
@@ -39,6 +39,10 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
         "NotAction",
         "Resource",
         "NotResource",
+    }
+    aws_statement_action_keys: Set[Literal["Action", "NotAction"]] = {
+        "Action",
+        "NotAction",
     }
 
     if not isinstance(policy, dict):
@@ -103,13 +107,13 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
                 if not isinstance(condition_value, list):
                     statement["Condition"][condition_operator][condition_key] = [condition_value]  # type: ignore
 
-        for action_key in ("Action", "NotAction"):
+        for action_key in aws_statement_action_keys:
             if action_list := statement.get(action_key):
                 new_action_list = []
                 for action in action_list:
                     if action.count(":") == 1:
                         service, action_name = action.split(":")
-                        action = ':'.join([service.lower(), action_name])
+                        action = ":".join([service.lower(), action_name])
                         new_action_list.append(action)
                     else:
                         new_action_list.append(action)
@@ -120,7 +124,7 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
 
 def negate_condition(condition: Dict[str, Any]) -> Dict[str, Any]:
     res_condition = deepcopy(condition)
-    condition_prefix = ""
+    condition_prefix = None
     condition_key, condition_value = list(res_condition.items())[0]
 
     if negated := CONDITIONS_NEGATIONS.get(condition_key):
@@ -133,7 +137,7 @@ def negate_condition(condition: Dict[str, Any]) -> Dict[str, Any]:
         condition_prefix = "ForAnyValue"
     elif condition_prefix == "ForAnyValue":
         condition_prefix = "ForAllValues"
-    else:
+    elif condition_prefix:
         logger.warning(f"Unknown policy condition prefix: {condition_prefix}")
 
     if condition_key.lower().endswith("ifexists"):

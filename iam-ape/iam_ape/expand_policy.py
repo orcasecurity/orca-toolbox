@@ -201,6 +201,10 @@ class PolicyExpander:
 
         return res
 
+    def get_action_access_level(self, action: str) -> str:
+        service, action_key = action.split(":")
+        return self.all_iam_actions[service][action_key]["access"]
+
     def deflate_policy_statements(
         self,
         policy_statements: List[AwsPolicyStatementType],

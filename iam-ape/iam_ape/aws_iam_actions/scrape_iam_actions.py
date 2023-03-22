@@ -26,30 +26,45 @@ def scrape_iam_actions() -> int:
     all_links = [
         a.get("href") for a in all_a if a.get("href", "").startswith("./list_")
     ]
-    data: Dict[str, Any] = {}
+    data: Dict[str, Any] = defaultdict(lambda: defaultdict(dict))
 
     logger.info("Updating AWS IAM actions database...")
     for link in tqdm.tqdm(all_links, ncols=70):
         try:
             soup = get_soup(base_url + link[2:])
             service_prefix = soup.find("code").string
-            data[service_prefix] = defaultdict(dict)
-            table = soup.find("table")
-            table_rows = table.find_all("tr")
-            for row in table_rows[1:]:
-                all_cells = row.find_all("td")
-
-                try:
-                    action = all_cells[0].find("a", href=True).get_text()
-                except AttributeError:  # AWS doing AWS things
+            # data[service_prefix] = defaultdict(dict)
+            tables = soup.find_all("div", class_="table-contents")
+            for table in tables:
+                headers = [
+                    str(x).lower().replace("<th>", "").replace("</th>", "")
+                    for x in table.find_all("th")
+                ]
+                if not all(
+                    [header in headers for header in ("actions", "description")]
+                ):
                     continue
 
-                if desc := all_cells[1].string:
-                    data[service_prefix][action]["description"] = desc
-                else:
-                    continue
+                rowspan = 1
+                for row in table.find_all("tr"):
+                    if rowspan > 1:
+                        rowspan -= 1
+                        continue
+                    rowspan = 1
 
-                data[service_prefix][action]["access"] = all_cells[2].string
+                    all_cells = row.find_all("td")
+                    if len(all_cells) == 0:
+                        continue
+
+                    if "rowspan" in all_cells[0].attrs:
+                        rowspan = int(all_cells[0].attrs["rowspan"])
+
+                    action = all_cells[0].text.strip().split(" ")[0]
+                    description = all_cells[1].string
+                    access_level = all_cells[2].string
+
+                    data[service_prefix][action]["description"] = description
+                    data[service_prefix][action]["access"] = access_level
 
         except AttributeError as e:
             logger.error(f"Error occurred while processing {link} - {e}")

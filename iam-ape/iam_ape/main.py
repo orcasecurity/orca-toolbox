@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import boto3  # type: ignore
 from botocore.exceptions import ProfileNotFound  # type: ignore
@@ -12,7 +12,7 @@ from botocore.exceptions import ProfileNotFound  # type: ignore
 from iam_ape.aws_iam_actions.scrape_iam_actions import scrape_iam_actions
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.helper_functions import deep_update
-from iam_ape.helper_types import EntityType
+from iam_ape.helper_types import AwsPolicyType, EntityType, FinalReportT
 
 logger = logging.getLogger("IAM-APE")
 entity_regex_string = r"arn:aws(-cn|-us-gov)?:iam::\d{12}:(user|group|role)/[\w-]+"
@@ -201,10 +201,11 @@ def main() -> int:
         logger.error(e)
         return -1
 
+    out: Union[AwsPolicyType, FinalReportT]
     if arguments.format == "clean":
         out = calculator.policy_expander.shrink_policy(res.allowed_permissions)
     else:
-        out = res.to_dict()
+        out = calculator.create_json_report(res)
 
     if arguments.output == "stdout":
         logger.info(f"Effective permissions policy for {arguments.arn}\n")
