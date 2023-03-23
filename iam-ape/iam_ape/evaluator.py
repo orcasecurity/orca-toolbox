@@ -493,8 +493,8 @@ class EffectivePolicyEvaluator:
                 "<service>": {
                     "<resource>": {
                         "<access_level>": {
-                            "action1": {"Condition: <condition>},
-                            "action2": {"Condition: <condition>},
+                            "action1": {"Condition: <condition>, "source": {<policy_arn>},
+                            "action2": {"Condition: <condition>, "source": {<policy_arn>},
                         }
                     }
                 }
@@ -503,8 +503,8 @@ class EffectivePolicyEvaluator:
                 "<service>": {
                     "<resource>": {
                         "<access_level>": {
-                            "action1": {"Condition: <condition>},
-                            "action2": {"Condition: <condition>},
+                            "action1": {"Condition: <condition>, "source": {<policy_arn>},
+                            "action2": {"Condition: <condition>, "source": {<policy_arn>},
                         }
                     }
                 }
@@ -528,12 +528,20 @@ class EffectivePolicyEvaluator:
         res: FinalReportT = {
             "allowed_permissions": defaultdict(
                 lambda: defaultdict(
-                    lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+                    lambda: defaultdict(
+                        lambda: defaultdict(
+                            lambda: {"Condition": None, "source": set()}
+                        )
+                    )
                 )
             ),
             "denied_permissions": defaultdict(
                 lambda: defaultdict(
-                    lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+                    lambda: defaultdict(
+                        lambda: defaultdict(
+                            lambda: {"Condition": None, "source": set()}
+                        )
+                    )
                 )
             ),
             "ineffective_permissions": defaultdict(
@@ -561,6 +569,9 @@ class EffectivePolicyEvaluator:
                     action_tuple.condition,
                     negate=False,
                 )
+                res["allowed_permissions"][service][resource][access_level][
+                    action_tuple.action
+                ]["source"].add(action_tuple.source)
 
         for action_tuple_set in permissions_container.denied_permissions.values():
             for action_tuple in action_tuple_set:

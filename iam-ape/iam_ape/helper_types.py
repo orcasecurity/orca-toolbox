@@ -7,35 +7,9 @@ from iam_ape.consts import PolicyElement
 
 
 class FinalReportT(TypedDict):
-    allowed_permissions: Dict[
-        str,
-        Dict[
-            str,
-            Dict[
-                str,
-                Dict[
-                    str,
-                    Dict[str, Optional[Dict[str, Any]]],
-                ],
-            ],
-        ],
-    ]
-    denied_permissions: Dict[
-        str,
-        Dict[
-            str,
-            Dict[
-                str,
-                Dict[
-                    str,
-                    Dict[str, Optional[Dict[str, Any]]],
-                ],
-            ],
-        ],
-    ]
-    ineffective_permissions: Dict[
-        str, Dict[str, Dict[str, Dict[str, Dict[str, Set[str]]]]]
-    ]
+    allowed_permissions: Dict[str, Any]
+    denied_permissions: Dict[str, Any]
+    ineffective_permissions: Dict[str, Any]
 
 
 class AwsPolicyStatementType(TypedDict, total=False):
