@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from collections import defaultdict
@@ -481,14 +482,19 @@ class EffectivePolicyEvaluator:
         def action_to_service(action: str) -> str:
             return action.split(":")[0]
 
+        def serialize_set(obj):
+            if isinstance(obj, set):
+                return list(obj)
+            return obj
+
         """
         {
             "allowed_permissions": {
                 "<service>": {
                     "<resource>": {
                         "<access_level>": {
-                            "action1": <condition>,
-                            "action2": <condition>,
+                            "action1": {"Condition: <condition>},
+                            "action2": {"Condition: <condition>},
                         }
                     }
                 }
@@ -497,8 +503,8 @@ class EffectivePolicyEvaluator:
                 "<service>": {
                     "<resource>": {
                         "<access_level>": {
-                            "action1": <condition>,
-                            "action2": <condition>,
+                            "action1": {"Condition: <condition>},
+                            "action2": {"Condition: <condition>},
                         }
                     }
                 }
@@ -507,8 +513,12 @@ class EffectivePolicyEvaluator:
                 "<service>": {
                     "<resource>": {
                         "<access_level>": {
-                            "action1": {<denied_by>},
-                            "action2": {<denied_by>},
+                            "action1": {
+                                "denied_by": {<denied_by>}
+                            },
+                            "action2": {
+                                "denied_by": {<denied_by>}
+                            },
                         }
                     }
                 }
@@ -517,13 +527,19 @@ class EffectivePolicyEvaluator:
         """
         res: FinalReportT = {
             "allowed_permissions": defaultdict(
-                lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+                lambda: defaultdict(
+                    lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+                )
             ),
             "denied_permissions": defaultdict(
-                lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+                lambda: defaultdict(
+                    lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+                )
             ),
             "ineffective_permissions": defaultdict(
-                lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
+                lambda: defaultdict(
+                    lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
+                )
             ),
         }
         # for section in ("allowed_permissions", "denied_permissions"):
@@ -538,7 +554,7 @@ class EffectivePolicyEvaluator:
                 )
                 res["allowed_permissions"][service][resource][access_level][
                     action_tuple.action
-                ] = merge_condition(
+                ]["Condition"] = merge_condition(
                     res["allowed_permissions"][service][resource][access_level].get(
                         action_tuple.action
                     ),
@@ -557,7 +573,7 @@ class EffectivePolicyEvaluator:
                 )
                 res["denied_permissions"][service][resource][access_level][
                     action_tuple.action
-                ] = merge_condition(
+                ]["Condition"] = merge_condition(
                     res["denied_permissions"][service][resource][access_level].get(
                         action_tuple.action
                     ),
@@ -575,7 +591,9 @@ class EffectivePolicyEvaluator:
             )
             res["ineffective_permissions"][service][resource][access_level][
                 action_tuple.action
-            ].add(action_tuple.denied_by)
+            ]["denied_by"].add(action_tuple.denied_by)
+
+        res = json.loads(json.dumps(res, default=serialize_set))
 
         return res
 

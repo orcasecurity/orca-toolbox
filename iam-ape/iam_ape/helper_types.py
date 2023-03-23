@@ -15,7 +15,7 @@ class FinalReportT(TypedDict):
                 str,
                 Dict[
                     str,
-                    Optional[Dict[str, Any]],
+                    Dict[str, Optional[Dict[str, Any]]],
                 ],
             ],
         ],
@@ -28,12 +28,14 @@ class FinalReportT(TypedDict):
                 str,
                 Dict[
                     str,
-                    Optional[Dict[str, Any]],
+                    Dict[str, Optional[Dict[str, Any]]],
                 ],
             ],
         ],
     ]
-    ineffective_permissions: Dict[str, Dict[str, Dict[str, Dict[str, Set[str]]]]]
+    ineffective_permissions: Dict[
+        str, Dict[str, Dict[str, Dict[str, Dict[str, Set[str]]]]]
+    ]
 
 
 class AwsPolicyStatementType(TypedDict, total=False):
