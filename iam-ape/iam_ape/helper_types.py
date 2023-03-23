@@ -6,6 +6,12 @@ from typing import Any, Dict, List, Optional, Set, TypedDict
 from iam_ape.consts import PolicyElement
 
 
+class FinalReportT(TypedDict):
+    allowed_permissions: Dict[str, Any]
+    denied_permissions: Dict[str, Any]
+    ineffective_permissions: Dict[str, Any]
+
+
 class AwsPolicyStatementType(TypedDict, total=False):
     Effect: str
     Sid: Optional[str]

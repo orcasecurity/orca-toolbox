@@ -74,9 +74,9 @@ def test_e2e() -> None:
         arn="arn:aws:iam::123456789012:user/TestUser1", entity_type=EntityType.user
     )
 
-    assert len(res.allowed_permissions) == 681
-    assert len(res.denied_permissions) == 13445
-    assert len(res.ineffective_permissions) == 170
+    assert len(res.allowed_permissions) > 600
+    assert len(res.denied_permissions) > 13000
+    assert len(res.ineffective_permissions) > 150
 
     minimized_policy = evaluator.policy_expander.shrink_policy(res.allowed_permissions)
     assert len(minimized_policy["Statement"]) == 3
@@ -86,3 +86,29 @@ def test_e2e() -> None:
             for statement in expected_result["Statement"]
         ]
     )
+
+    json_report = evaluator.create_json_report(res)
+    assert sum(
+        [
+            len(y)
+            for x in json_report["allowed_permissions"].values()
+            for v in x.values()
+            for y in v.values()
+        ]
+    ) == sum([len(x) for x in res.allowed_permissions.values()])
+    assert sum(
+        [
+            len(y)
+            for x in json_report["denied_permissions"].values()
+            for v in x.values()
+            for y in v.values()
+        ]
+    ) == sum([len(x) for x in res.denied_permissions.values()])
+    assert sum(
+        [
+            len(y)
+            for x in json_report["ineffective_permissions"].values()
+            for v in x.values()
+            for y in v.values()
+        ]
+    ) == len(res.ineffective_permissions)

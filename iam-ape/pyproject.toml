@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "iam-ape"
-version = "1.0.4"
+version = "1.0.5"
 description = "IAM AWS Permissions Evaluator"
 authors = ["Tohar Braun, Orca Security <tohar@orca.security>"]
 license = "GPL-3.0-or-later"
@@ -33,7 +33,7 @@ flake8 = "*"
 isort = "*"
 
 [tool.setuptools.package-data]
-iam-ape = ["iam_ape/aws_iam_actions/*.tar.gz"]
+iam-ape = ["iam_ape/aws_iam_actions/*.tar.gz", "iam_ape/py.typed"]
 
 [tool.poetry.scripts]
 iam-ape = "iam_ape.main:main"

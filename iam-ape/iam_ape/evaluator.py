@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from collections import defaultdict
@@ -16,6 +17,7 @@ from iam_ape.helper_functions import (
 from iam_ape.helper_types import (
     Action,
     EntityType,
+    FinalReportT,
     IneffectiveAction,
     PermissionsContainer,
     PolicyWithSource,
@@ -474,6 +476,138 @@ class EffectivePolicyEvaluator:
         self.auth_details = authorization_details
         self.policy_expander = PolicyExpander()
 
+    def create_json_report(
+        self, permissions_container: PermissionsContainer
+    ) -> FinalReportT:
+        def action_to_service(action: str) -> str:
+            return action.split(":")[0]
+
+        def serialize_set(obj):
+            if isinstance(obj, set):
+                return list(obj)
+            return obj
+
+        """
+        {
+            "allowed_permissions": {
+                "<service>": {
+                    "<resource>": {
+                        "<access_level>": {
+                            "action1": {"Condition: <condition>, "source": {<policy_arn>},
+                            "action2": {"Condition: <condition>, "source": {<policy_arn>},
+                        }
+                    }
+                }
+            },
+            "denied_permissions": {
+                "<service>": {
+                    "<resource>": {
+                        "<access_level>": {
+                            "action1": {"Condition: <condition>, "source": {<policy_arn>},
+                            "action2": {"Condition: <condition>, "source": {<policy_arn>},
+                        }
+                    }
+                }
+            },
+            "ineffective_permissions": {
+                "<service>": {
+                    "<resource>": {
+                        "<access_level>": {
+                            "action1": {
+                                "denied_by": {<denied_by>}
+                            },
+                            "action2": {
+                                "denied_by": {<denied_by>}
+                            },
+                        }
+                    }
+                }
+            }
+        }
+        """
+        res: FinalReportT = {
+            "allowed_permissions": defaultdict(
+                lambda: defaultdict(
+                    lambda: defaultdict(
+                        lambda: defaultdict(
+                            lambda: {"Condition": None, "source": set()}
+                        )
+                    )
+                )
+            ),
+            "denied_permissions": defaultdict(
+                lambda: defaultdict(
+                    lambda: defaultdict(
+                        lambda: defaultdict(
+                            lambda: {"Condition": None, "source": set()}
+                        )
+                    )
+                )
+            ),
+            "ineffective_permissions": defaultdict(
+                lambda: defaultdict(
+                    lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
+                )
+            ),
+        }
+        # for section in ("allowed_permissions", "denied_permissions"):
+        for action_tuple_set in permissions_container.allowed_permissions.values():
+            for action_tuple in action_tuple_set:
+                service = action_to_service(action_tuple.action)
+                resource = action_tuple.resource or "*"
+                if action_tuple.not_resource:
+                    resource += f" EXCEPT {action_tuple.not_resource}"
+                access_level = self.policy_expander.get_action_access_level(
+                    action_tuple.action
+                )
+                res["allowed_permissions"][service][resource][access_level][
+                    action_tuple.action
+                ]["Condition"] = merge_condition(
+                    res["allowed_permissions"][service][resource][access_level].get(
+                        action_tuple.action
+                    ),
+                    action_tuple.condition,
+                    negate=False,
+                )
+                res["allowed_permissions"][service][resource][access_level][
+                    action_tuple.action
+                ]["source"].add(action_tuple.source)
+
+        for action_tuple_set in permissions_container.denied_permissions.values():
+            for action_tuple in action_tuple_set:
+                service = action_to_service(action_tuple.action)
+                resource = action_tuple.resource or "*"
+                if action_tuple.not_resource:
+                    resource += f" EXCEPT {action_tuple.not_resource}"
+                access_level = self.policy_expander.get_action_access_level(
+                    action_tuple.action
+                )
+                res["denied_permissions"][service][resource][access_level][
+                    action_tuple.action
+                ]["Condition"] = merge_condition(
+                    res["denied_permissions"][service][resource][access_level].get(
+                        action_tuple.action
+                    ),
+                    action_tuple.condition,
+                    negate=False,
+                )
+
+        for action_tuple in permissions_container.ineffective_permissions:
+            service = action_to_service(action_tuple.action)
+            resource = action_tuple.resource or "*"
+            if action_tuple.not_resource:
+                resource += f" EXCEPT {action_tuple.not_resource}"
+            access_level = self.policy_expander.get_action_access_level(
+                action_tuple.action
+            )
+            res["ineffective_permissions"][service][resource][access_level][
+                action_tuple.action
+            ]["denied_by"].add(action_tuple.denied_by)
+
+        res = json.loads(json.dumps(res, default=serialize_set))
+
+        return res
+
     def get_managed_policies(
         self, managed_policies: List[Dict[str, str]]
     ) -> List[PolicyWithSource]:
@@ -516,7 +650,7 @@ class EffectivePolicyEvaluator:
 
         return permissions
 
-    def evaluate(self, arn: str, entity_type: EntityType):
+    def evaluate(self, arn: str, entity_type: EntityType) -> PermissionsContainer:
         entity_obj = getattr(self.auth_details, entity_type.value).get(arn)
         if not entity_obj:
             logger.error(f"Error - couldn't find entity with ARN {arn}")
