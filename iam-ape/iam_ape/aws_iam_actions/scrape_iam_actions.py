@@ -33,7 +33,6 @@ def scrape_iam_actions() -> int:
         try:
             soup = get_soup(base_url + link[2:])
             service_prefix = soup.find("code").string
-            # data[service_prefix] = defaultdict(dict)
             tables = soup.find_all("div", class_="table-contents")
             for table in tables:
                 headers = [
