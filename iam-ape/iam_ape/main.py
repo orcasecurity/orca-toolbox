@@ -92,16 +92,19 @@ def load_auth_details_from_aws(profile: Optional[str] = None) -> AuthorizationDe
     logger.info("Attempting to fetch authorization details report from AWS...")
     auth_report: Dict[str, Any] = {}
     profile = profile or os.environ.get("AWS_PROFILE")
-    if not profile:
-        raise ValueError("No AWS profile found")
-    boto3.setup_default_session(profile_name=profile)
+    if profile:
+        logger.info(f"AWS Auth: Using profile: {profile}")
+        boto3.setup_default_session(profile_name=profile)
+    elif not profile and os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
+        logger.info(f"AWS Auth: Using environment variables")
+    else:
+        raise ValueError(f"AWS Auth: No authentication method found. Please set AWS_PROFILE (or use --profile) or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
     iam_client = boto3.client("iam")
     paginator = iam_client.get_paginator("get_account_authorization_details")
     for page in paginator.paginate():
         auth_report = deep_update(auth_report, page)
     a = AuthorizationDetails(auth_report)
     return a
-
 
 def build_arg_parser() -> argparse.ArgumentParser:
     arg_parser = argparse.ArgumentParser()
@@ -215,7 +218,6 @@ def main() -> int:
             json.dump(out, f)
 
     return 0
-
 
 if __name__ == "__main__":
     exit(main())
