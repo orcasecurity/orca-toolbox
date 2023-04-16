@@ -8,6 +8,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from iam_ape.consts import PolicyElement
 from iam_ape.expand_policy import PolicyExpander
+from iam_ape.helper_classes import (
+    Action,
+    PermissionsContainer,
+    IneffectiveAction,
+    PolicyWithSource,
+)
 from iam_ape.helper_functions import (
     deep_update,
     get_default_policy_for_managed_policy,
@@ -15,12 +21,8 @@ from iam_ape.helper_functions import (
     normalize_policy,
 )
 from iam_ape.helper_types import (
-    Action,
     EntityType,
     FinalReportT,
-    IneffectiveAction,
-    PermissionsContainer,
-    PolicyWithSource,
 )
 
 logger = logging.getLogger("IAM-APE:evaluator")
@@ -472,9 +474,18 @@ class AuthorizationDetails(object):
 
 
 class EffectivePolicyEvaluator:
-    def __init__(self, authorization_details: AuthorizationDetails) -> None:
+    def __init__(
+        self,
+        authorization_details: AuthorizationDetails,
+        scp_policies: Optional[List[PolicyWithSource]] = None,
+    ) -> None:
         self.auth_details = authorization_details
         self.policy_expander = PolicyExpander()
+        self.scp_policy = (
+            self.policy_expander.expand_policies(scp_policies)
+            if scp_policies
+            else PermissionsContainer()
+        )
 
     def create_json_report(
         self, permissions_container: PermissionsContainer
@@ -673,19 +684,18 @@ class EffectivePolicyEvaluator:
 
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
-        if (
-            permission_boundary.allowed_permissions
-            or permission_boundary.denied_permissions
-        ):
-            final_permissions, more_ineffective_permissions = apply_permission_boundary(
-                final_permissions, permission_boundary
-            )
-            ineffective_permissions.update(more_ineffective_permissions)
+        for boundary in (permission_boundary, self.scp_policy):
+            if boundary.allowed_permissions or boundary.denied_permissions:
+                (
+                    final_permissions,
+                    more_ineffective_permissions,
+                ) = apply_permission_boundary(final_permissions, boundary)
+                ineffective_permissions.update(more_ineffective_permissions)
 
-        denied_permissions = deep_update(
-            direct_permissions.denied_permissions,
-            permission_boundary.denied_permissions,
-        )
+            denied_permissions = deep_update(
+                direct_permissions.denied_permissions,
+                boundary.denied_permissions,
+            )
 
         return PermissionsContainer(
             allowed_permissions=final_permissions,

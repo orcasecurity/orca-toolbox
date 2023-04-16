@@ -3,17 +3,20 @@ import logging
 import tarfile
 from collections import defaultdict
 from fnmatch import fnmatch
+from requests.structures import CaseInsensitiveDict
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple
 
 from iam_ape.consts import PolicyElement, actions_json_location
+from iam_ape.helper_classes import (
+    HashableDict,
+    Action,
+    PolicyWithSource,
+    PermissionsContainer,
+)
 from iam_ape.helper_functions import as_list, normalize_policy
 from iam_ape.helper_types import (
-    Action,
     AwsPolicyStatementType,
     AwsPolicyType,
-    HashableDict,
-    PermissionsContainer,
-    PolicyWithSource,
 )
 
 logger = logging.getLogger("policy expander")
@@ -75,19 +78,27 @@ def _append_action(
 
 class PolicyExpander:
     def __init__(self) -> None:
-        self.all_iam_actions: Dict[str, Any] = self._init_iam_actions()
+        self.all_iam_actions: CaseInsensitiveDict = self._init_iam_actions()
         self._all_service_wildcards: List[str] = [
             f"{k}:*" for k, v in self.all_iam_actions.items() if len(v) > 0
         ]
 
     @staticmethod
-    def _init_iam_actions() -> Dict[str, Dict[str, Dict[str, str]]]:
+    def _init_iam_actions() -> CaseInsensitiveDict:
+        res: CaseInsensitiveDict = CaseInsensitiveDict()
         try:
             with tarfile.open(actions_json_location) as f:
-                return json.load(f.extractfile("actions.json"))  # type: ignore
+                data = json.load(f.extractfile("actions.json"))  # type: ignore
+                for k, v in data.items():
+                    res[k] = CaseInsensitiveDict(v)
         except Exception as e:
             logger.exception(f"Failed to load AWS IAM Actions due to {e}")
-        return {}
+        return res
+
+    def normalize_action(self, action: str) -> str:
+        service, permission = action.split(":", maxsplit=1)
+        permission = self.all_iam_actions[service]._store[permission.lower()][0]
+        return f"{service}:{permission}"
 
     def expand_policies(self, policies: List[PolicyWithSource]) -> PermissionsContainer:
         allow_actions_dict: Dict[str, Set[Action]] = defaultdict(set)
@@ -146,12 +157,9 @@ class PolicyExpander:
                         source=iam_action.source,
                     )
         elif PolicyElement.WILDCARD in iam_action.action:  # {"Action": ["iam:*"]}
-            assert (
-                iam_action.action.count(":") == 1
-            ), f"Got an invalid wildcard action: {iam_action.action}"
-            service, wildcard_action = iam_action.action.split(":")
+            service, wildcard_action = iam_action.action.split(":", maxsplit=1)
             for action in self.all_iam_actions[service].keys():
-                if fnmatch(action, wildcard_action):
+                if fnmatch(action.lower(), wildcard_action.lower()):
                     _append_action(
                         res=res,
                         action=f"{service}:{action}",
@@ -161,9 +169,10 @@ class PolicyExpander:
                         source=iam_action.source,
                     )
         else:  # {"Action": ["sts:GetCallerIdentity"]}
+            action = self.normalize_action(iam_action.action)
             _append_action(
                 res=res,
-                action=iam_action.action,
+                action=action,
                 resources=as_list(iam_action.resource),
                 not_resources=as_list(iam_action.not_resource),
                 condition=iam_action.condition,
@@ -186,8 +195,12 @@ class PolicyExpander:
             for iam_service, action_dicts in self.all_iam_actions.items():
                 for action in action_dicts.keys():
                     curr_action = f"{iam_service}:{action}"
+                    curr_action_lower = curr_action.lower()
                     if any(
-                        [fnmatch(curr_action, not_action) for not_action in notactions]
+                        [
+                            fnmatch(curr_action_lower, not_action.lower())
+                            for not_action in notactions
+                        ]
                     ):
                         continue
                     _append_action(
@@ -202,7 +215,7 @@ class PolicyExpander:
         return res
 
     def get_action_access_level(self, action: str) -> str:
-        service, action_key = action.split(":")
+        service, action_key = action.split(":", maxsplit=1)
         return self.all_iam_actions[service][action_key]["access"]
 
     def deflate_policy_statements(
@@ -212,7 +225,7 @@ class PolicyExpander:
         for statement in policy_statements:
             action_dict = defaultdict(list)
             for action in statement.get(PolicyElement.ACTION) or []:
-                service, action_key = action.split(":")
+                service, action_key = action.split(":", maxsplit=1)
                 action_dict[service].append(action_key)
             for service, action_keys in action_dict.items():
                 try:
