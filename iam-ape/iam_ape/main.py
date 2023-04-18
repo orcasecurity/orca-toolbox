@@ -4,22 +4,19 @@ import logging
 import os
 import re
 import sys
-from typing import Any, Dict, Optional, Union, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-import boto3  # type: ignore
-from botocore.exceptions import AccessDeniedException, AWSOrganizationsNotInUseException, ProfileNotFound  # type: ignore
+import boto3
+from botocore.exceptions import ClientError, ProfileNotFound
 
 from iam_ape.aws_iam_actions.scrape_iam_actions import scrape_iam_actions
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.helper_classes import PolicyWithSource
 from iam_ape.helper_functions import deep_update
-from iam_ape.helper_types import (
-    AwsPolicyType,
-    EntityType,
-    FinalReportT,
-)
+from iam_ape.helper_types import AwsPolicyType, EntityType, FinalReportT
 
 logger = logging.getLogger("IAM-APE")
+logging.getLogger("botocore").setLevel(logging.WARNING)  # suppress botocore logs
 entity_regex_string = r"arn:aws(-cn|-us-gov)?:iam::(?P<account>\d{12}):(?P<entity_type>user|group|role)/[\w-]+"
 entity_regex = re.compile(entity_regex_string)
 
@@ -124,7 +121,7 @@ def load_scp_from_json(inp: str) -> PolicyWithSource:
 def load_scp_from_aws(
     account_id: str, profile: Optional[str] = None
 ) -> List[PolicyWithSource]:
-    logger.info("Attempting to fetch Service Control Policies from AWS...")
+    logger.info("Attempting to fetch service control policies from AWS...")
     profile = profile or os.environ.get("AWS_PROFILE")
     policies = []
 
@@ -133,7 +130,7 @@ def load_scp_from_aws(
 
     boto3.setup_default_session(profile_name=profile)
     org_client = boto3.client("organizations")
-    paginator = org_client.get_paginator("list-policies-for-target")
+    paginator = org_client.get_paginator("list_policies_for_target")
 
     for page in paginator.paginate(
         TargetId=account_id, Filter="SERVICE_CONTROL_POLICY"
@@ -176,10 +173,13 @@ def get_scp_policies(
             policy_jsons.extend(
                 load_scp_from_aws(profile=profile, account_id=entity_account)
             )
-        except AWSOrganizationsNotInUseException:
-            logger.debug("SCP Policies not in use for this account")
-        except AccessDeniedException:
-            logger.info("Could not fetch SCP policies due to insufficient permissions")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "AWSOrganizationsNotInUseException":
+                logger.debug("SCP Policies not in use for this account")
+            elif e.response["Error"]["Code"] == "AccessDeniedException":
+                logger.info(
+                    "Could not fetch SCP policies due to insufficient permissions"
+                )
 
     return policy_jsons
 
@@ -278,7 +278,9 @@ def main() -> int:
     )
 
     logger.info("Evaluating effective permissions")
-    calculator = EffectivePolicyEvaluator(auth_details)
+    calculator = EffectivePolicyEvaluator(
+        authorization_details=auth_details, scp_policies=scp_policies
+    )
 
     try:
         res = calculator.evaluate(arn=arguments.arn, entity_type=entity_type)

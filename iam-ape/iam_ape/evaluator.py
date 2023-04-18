@@ -10,8 +10,8 @@ from iam_ape.consts import PolicyElement
 from iam_ape.expand_policy import PolicyExpander
 from iam_ape.helper_classes import (
     Action,
-    PermissionsContainer,
     IneffectiveAction,
+    PermissionsContainer,
     PolicyWithSource,
 )
 from iam_ape.helper_functions import (
@@ -20,10 +20,7 @@ from iam_ape.helper_functions import (
     merge_condition,
     normalize_policy,
 )
-from iam_ape.helper_types import (
-    EntityType,
-    FinalReportT,
-)
+from iam_ape.helper_types import EntityType, FinalReportT
 
 logger = logging.getLogger("IAM-APE:evaluator")
 

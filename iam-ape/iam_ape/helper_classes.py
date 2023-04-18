@@ -1,12 +1,12 @@
 from collections import namedtuple
 from dataclasses import dataclass, field
-from typing import List, Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from iam_ape.consts import PolicyElement
 from iam_ape.helper_types import (
     ActionDict,
-    IneffectiveActionDict,
     AwsPolicyType,
+    IneffectiveActionDict,
     PermissionsContainerDict,
 )
 

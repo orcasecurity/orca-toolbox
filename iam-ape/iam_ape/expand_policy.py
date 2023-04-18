@@ -3,21 +3,19 @@ import logging
 import tarfile
 from collections import defaultdict
 from fnmatch import fnmatch
-from requests.structures import CaseInsensitiveDict
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple
+
+from requests.structures import CaseInsensitiveDict
 
 from iam_ape.consts import PolicyElement, actions_json_location
 from iam_ape.helper_classes import (
-    HashableDict,
     Action,
-    PolicyWithSource,
+    HashableDict,
     PermissionsContainer,
+    PolicyWithSource,
 )
 from iam_ape.helper_functions import as_list, normalize_policy
-from iam_ape.helper_types import (
-    AwsPolicyStatementType,
-    AwsPolicyType,
-)
+from iam_ape.helper_types import AwsPolicyStatementType, AwsPolicyType
 
 logger = logging.getLogger("policy expander")
 
@@ -295,4 +293,13 @@ class PolicyExpander:
             statements.append(statement)
 
         policy_res["Statement"] = self.deflate_policy_statements(statements)
+
+        admin_statement: AwsPolicyStatementType = {
+            "Effect": "Allow",
+            "Action": ["*"],
+            "Resource": ["*"],
+        }
+        if any([statement == admin_statement for statement in policy_res["Statement"]]):
+            policy_res["Statement"] = [admin_statement]
+
         return normalize_policy(policy_res)
