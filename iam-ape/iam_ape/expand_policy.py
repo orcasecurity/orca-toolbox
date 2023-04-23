@@ -11,6 +11,7 @@ from iam_ape.consts import PolicyElement, actions_json_location
 from iam_ape.helper_classes import (
     Action,
     HashableDict,
+    HashableList,
     PermissionsContainer,
     PolicyWithSource,
 )
@@ -167,15 +168,17 @@ class PolicyExpander:
                         source=iam_action.source,
                     )
         else:  # {"Action": ["sts:GetCallerIdentity"]}
-            action = self.normalize_action(iam_action.action)
-            _append_action(
-                res=res,
-                action=action,
-                resources=as_list(iam_action.resource),
-                not_resources=as_list(iam_action.not_resource),
-                condition=iam_action.condition,
-                source=iam_action.source,
-            )
+            try:
+                _append_action(
+                    res=res,
+                    action=self.normalize_action(iam_action.action),
+                    resources=as_list(iam_action.resource),
+                    not_resources=as_list(iam_action.not_resource),
+                    condition=iam_action.condition,
+                    source=iam_action.source,
+                )
+            except KeyError:  # not a valid action
+                logger.debug(f"Got an invalid action: {iam_action.action}")
 
         return res
 
@@ -254,6 +257,7 @@ class PolicyExpander:
         for allow_action_set in allow_actions.values():
             squashed_policies.update(allow_action_set)
 
+        # Arrange by Resource/NotResource
         by_resource_notresource: Dict[
             Tuple[Optional[str], Optional[str]], Dict[Optional[HashableDict], Set[str]]
         ] = defaultdict(lambda: defaultdict(set))
@@ -262,6 +266,7 @@ class PolicyExpander:
                 HashableDict.recursively(action_tuple.condition)
             ].add(action_tuple.action)
 
+        # Arrange by Action/Condition/NotResource
         by_action_condition_notresource: Dict[
             Tuple[FrozenSet[str], Optional[HashableDict], Optional[str]], Set[str]
         ] = defaultdict(set)
@@ -292,14 +297,44 @@ class PolicyExpander:
                 statement[PolicyElement.CONDITION] = condition
             statements.append(statement)
 
-        policy_res["Statement"] = self.deflate_policy_statements(statements)
+        deflated_statements = self.deflate_policy_statements(statements)
+
+        final_statements: Dict[int, AwsPolicyStatementType] = {}
+        for statement in deflated_statements:
+            statement_key = hash(
+                (
+                    HashableList(statement[PolicyElement.ACTION] or []),
+                    HashableDict.recursively(statement.get(PolicyElement.CONDITION)),
+                )
+            )
+            if statement_key in final_statements.keys():
+                rsrc = (
+                    final_statements[statement_key].get(PolicyElement.RESOURCE) or []
+                ) + (statement.get(PolicyElement.RESOURCE) or [])
+                if rsrc:
+                    final_statements[statement_key][PolicyElement.RESOURCE] = list(
+                        set(rsrc)
+                    )
+                not_rsrc = (
+                    final_statements[statement_key].get(PolicyElement.NOTRESOURCE) or []
+                ) + (statement.get(PolicyElement.NOTRESOURCE) or [])
+                if not_rsrc:
+                    final_statements[statement_key][PolicyElement.NOTRESOURCE] = list(
+                        set(not_rsrc)
+                    )
+            else:
+                final_statements[statement_key] = statement
 
         admin_statement: AwsPolicyStatementType = {
-            "Effect": "Allow",
-            "Action": ["*"],
-            "Resource": ["*"],
+            PolicyElement.EFFECT: PolicyElement.ALLOW,
+            PolicyElement.ACTION: [PolicyElement.WILDCARD],
+            PolicyElement.RESOURCE: [PolicyElement.WILDCARD],
         }
-        if any([statement == admin_statement for statement in policy_res["Statement"]]):
+        if any(
+            [statement == admin_statement for statement in final_statements.values()]
+        ):
             policy_res["Statement"] = [admin_statement]
+        else:
+            policy_res["Statement"] = list(final_statements.values())
 
         return normalize_policy(policy_res)

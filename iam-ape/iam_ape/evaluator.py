@@ -564,19 +564,27 @@ class EffectivePolicyEvaluator:
                 service = action_to_service(action_tuple.action)
                 resource = action_tuple.resource or "*"
                 if action_tuple.not_resource:
-                    resource += f" EXCEPT {action_tuple.not_resource}"
+                    if res["allowed_permissions"][service][resource].get("NotResource"):
+                        res["allowed_permissions"][service][resource][
+                            "NotResource"
+                        ].append(action_tuple.not_resource)
+                    else:
+                        res["allowed_permissions"][service][resource]["NotResource"] = [
+                            action_tuple.not_resource
+                        ]
                 access_level = self.policy_expander.get_action_access_level(
                     action_tuple.action
                 )
-                res["allowed_permissions"][service][resource][access_level][
-                    action_tuple.action
-                ]["Condition"] = merge_condition(
-                    res["allowed_permissions"][service][resource][access_level].get(
-                        action_tuple.action
-                    ),
+                if cond := merge_condition(
+                    res["allowed_permissions"][service][resource][access_level]
+                    .get(action_tuple.action, {})
+                    .get("Condition", {}),
                     action_tuple.condition,
                     negate=False,
-                )
+                ):
+                    res["allowed_permissions"][service][resource][access_level][
+                        action_tuple.action
+                    ]["Condition"] = cond
                 res["allowed_permissions"][service][resource][access_level][
                     action_tuple.action
                 ]["source"].add(action_tuple.source)
@@ -586,25 +594,40 @@ class EffectivePolicyEvaluator:
                 service = action_to_service(action_tuple.action)
                 resource = action_tuple.resource or "*"
                 if action_tuple.not_resource:
-                    resource += f" EXCEPT {action_tuple.not_resource}"
+                    if res["denied_permissions"][service][resource].get("NotResource"):
+                        res["denied_permissions"][service][resource][
+                            "NotResource"
+                        ].append(action_tuple.not_resource)
+                    else:
+                        res["denied_permissions"][service][resource]["NotResource"] = [
+                            action_tuple.not_resource
+                        ]
                 access_level = self.policy_expander.get_action_access_level(
                     action_tuple.action
                 )
-                res["denied_permissions"][service][resource][access_level][
-                    action_tuple.action
-                ]["Condition"] = merge_condition(
-                    res["denied_permissions"][service][resource][access_level].get(
-                        action_tuple.action
-                    ),
+                if cond := merge_condition(
+                    res["denied_permissions"][service][resource][access_level]
+                    .get(action_tuple.action, {})
+                    .get("Condition", {}),
                     action_tuple.condition,
                     negate=False,
-                )
+                ):
+                    res["denied_permissions"][service][resource][access_level][
+                        action_tuple.action
+                    ]["Condition"] = cond
 
         for action_tuple in permissions_container.ineffective_permissions:
             service = action_to_service(action_tuple.action)
             resource = action_tuple.resource or "*"
             if action_tuple.not_resource:
-                resource += f" EXCEPT {action_tuple.not_resource}"
+                if res["ineffective_permissions"][service][resource].get("NotResource"):
+                    res["ineffective_permissions"][service][resource][
+                        "NotResource"
+                    ].append(action_tuple.not_resource)
+                else:
+                    res["ineffective_permissions"][service][resource]["NotResource"] = [
+                        action_tuple.not_resource
+                    ]
             access_level = self.policy_expander.get_action_access_level(
                 action_tuple.action
             )

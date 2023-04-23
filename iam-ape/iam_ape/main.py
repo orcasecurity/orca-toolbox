@@ -273,9 +273,11 @@ def main() -> int:
         logger.error(e)
         return -1
 
-    scp_policies = get_scp_policies(
-        arguments.scp_policy, arguments.profile, entity_account
-    )
+    scp_policies = None
+    if arguments.input is None or arguments.scp_policy is not None:
+        scp_policies = get_scp_policies(
+            arguments.scp_policy, arguments.profile, entity_account
+        )
 
     logger.info("Evaluating effective permissions")
     calculator = EffectivePolicyEvaluator(
@@ -299,7 +301,10 @@ def main() -> int:
         logger.info(json.dumps(out, indent=2))
     else:
         with open(arguments.output, "w") as f:
-            json.dump(out, f)
+            json.dump(out, f, indent=2)
+        logger.info(
+            f"Wrote effective permissions for {arguments.arn} to {arguments.output}"
+        )
 
     return 0
 
