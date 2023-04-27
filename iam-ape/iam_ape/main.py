@@ -106,6 +106,7 @@ def load_auth_details_from_aws(profile: Optional[str] = None) -> AuthorizationDe
     a = AuthorizationDetails(auth_report)
     return a
 
+
 def build_arg_parser() -> argparse.ArgumentParser:
     arg_parser = argparse.ArgumentParser()
     basic_usage = arg_parser.add_argument_group()
@@ -218,6 +219,7 @@ def main() -> int:
             json.dump(out, f)
 
     return 0
+
 
 if __name__ == "__main__":
     exit(main())
