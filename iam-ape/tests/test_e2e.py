@@ -2,6 +2,7 @@ import json
 import os
 
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
+from iam_ape.helper_classes import PolicyWithSource
 from iam_ape.helper_types import EntityType
 
 expected_result = {
@@ -60,7 +61,12 @@ expected_result = {
 
 
 def test_e2e() -> None:
-    with open(os.path.join(os.path.dirname(__file__), "test_data.json")) as f:
+    with open(
+        os.path.join(
+            os.path.dirname(__file__),
+            "test_data/test_account_authorizations_details.json",
+        )
+    ) as f:
         data = json.load(f)
     auth_details = AuthorizationDetails(data)
 
@@ -69,7 +75,21 @@ def test_e2e() -> None:
     assert len(auth_details.Role) == 2
     assert len(auth_details.Policy) == 6
 
-    evaluator = EffectivePolicyEvaluator(auth_details)
+    with open(
+        os.path.join(
+            os.path.dirname(__file__),
+            "test_data/test_scp_policy_1.json",
+        )
+    ) as f:
+        data = json.load(f)
+    scp_policies = [
+        PolicyWithSource(
+            data["Policy"]["PolicySummary"]["Arn"],
+            json.loads(data["Policy"]["Content"]),
+        )
+    ]
+
+    evaluator = EffectivePolicyEvaluator(auth_details, scp_policies)
     res = evaluator.evaluate(
         arn="arn:aws:iam::123456789012:user/TestUser1", entity_type=EntityType.user
     )

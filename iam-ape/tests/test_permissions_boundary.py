@@ -1,7 +1,7 @@
 from typing import Dict, Set
 
 from iam_ape.evaluator import apply_permission_boundary
-from iam_ape.helper_types import Action, PermissionsContainer
+from iam_ape.helper_classes import Action, PermissionsContainer
 
 action = "kms:CreateKey"
 resource_wide = "arn:aws:kms:us-east-1:123456789012:key/testing-*"

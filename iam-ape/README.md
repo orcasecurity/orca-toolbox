@@ -50,4 +50,4 @@ This statement, having both `Resource` and `NotResource` together, is not suppor
 ## Roadmap ##
 - [ ] Add an option to supply a resource policy and evaluate whether the entity has access to that resource 
 - [ ] Support additional permissions inherited by Role assumption
-- [ ] Support SCP Policies
+- [x] Support SCP Policies

@@ -8,20 +8,19 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from iam_ape.consts import PolicyElement
 from iam_ape.expand_policy import PolicyExpander
+from iam_ape.helper_classes import (
+    Action,
+    IneffectiveAction,
+    PermissionsContainer,
+    PolicyWithSource,
+)
 from iam_ape.helper_functions import (
     deep_update,
     get_default_policy_for_managed_policy,
     merge_condition,
     normalize_policy,
 )
-from iam_ape.helper_types import (
-    Action,
-    EntityType,
-    FinalReportT,
-    IneffectiveAction,
-    PermissionsContainer,
-    PolicyWithSource,
-)
+from iam_ape.helper_types import EntityType, FinalReportT
 
 logger = logging.getLogger("IAM-APE:evaluator")
 
@@ -472,9 +471,18 @@ class AuthorizationDetails(object):
 
 
 class EffectivePolicyEvaluator:
-    def __init__(self, authorization_details: AuthorizationDetails) -> None:
+    def __init__(
+        self,
+        authorization_details: AuthorizationDetails,
+        scp_policies: Optional[List[PolicyWithSource]] = None,
+    ) -> None:
         self.auth_details = authorization_details
         self.policy_expander = PolicyExpander()
+        self.scp_policy = (
+            self.policy_expander.expand_policies(scp_policies)
+            if scp_policies
+            else PermissionsContainer()
+        )
 
     def create_json_report(
         self, permissions_container: PermissionsContainer
@@ -556,19 +564,27 @@ class EffectivePolicyEvaluator:
                 service = action_to_service(action_tuple.action)
                 resource = action_tuple.resource or "*"
                 if action_tuple.not_resource:
-                    resource += f" EXCEPT {action_tuple.not_resource}"
+                    if res["allowed_permissions"][service][resource].get("NotResource"):
+                        res["allowed_permissions"][service][resource][
+                            "NotResource"
+                        ].append(action_tuple.not_resource)
+                    else:
+                        res["allowed_permissions"][service][resource]["NotResource"] = [
+                            action_tuple.not_resource
+                        ]
                 access_level = self.policy_expander.get_action_access_level(
                     action_tuple.action
                 )
-                res["allowed_permissions"][service][resource][access_level][
-                    action_tuple.action
-                ]["Condition"] = merge_condition(
-                    res["allowed_permissions"][service][resource][access_level].get(
-                        action_tuple.action
-                    ),
+                if cond := merge_condition(
+                    res["allowed_permissions"][service][resource][access_level]
+                    .get(action_tuple.action, {})
+                    .get("Condition", {}),
                     action_tuple.condition,
                     negate=False,
-                )
+                ):
+                    res["allowed_permissions"][service][resource][access_level][
+                        action_tuple.action
+                    ]["Condition"] = cond
                 res["allowed_permissions"][service][resource][access_level][
                     action_tuple.action
                 ]["source"].add(action_tuple.source)
@@ -578,25 +594,40 @@ class EffectivePolicyEvaluator:
                 service = action_to_service(action_tuple.action)
                 resource = action_tuple.resource or "*"
                 if action_tuple.not_resource:
-                    resource += f" EXCEPT {action_tuple.not_resource}"
+                    if res["denied_permissions"][service][resource].get("NotResource"):
+                        res["denied_permissions"][service][resource][
+                            "NotResource"
+                        ].append(action_tuple.not_resource)
+                    else:
+                        res["denied_permissions"][service][resource]["NotResource"] = [
+                            action_tuple.not_resource
+                        ]
                 access_level = self.policy_expander.get_action_access_level(
                     action_tuple.action
                 )
-                res["denied_permissions"][service][resource][access_level][
-                    action_tuple.action
-                ]["Condition"] = merge_condition(
-                    res["denied_permissions"][service][resource][access_level].get(
-                        action_tuple.action
-                    ),
+                if cond := merge_condition(
+                    res["denied_permissions"][service][resource][access_level]
+                    .get(action_tuple.action, {})
+                    .get("Condition", {}),
                     action_tuple.condition,
                     negate=False,
-                )
+                ):
+                    res["denied_permissions"][service][resource][access_level][
+                        action_tuple.action
+                    ]["Condition"] = cond
 
         for action_tuple in permissions_container.ineffective_permissions:
             service = action_to_service(action_tuple.action)
             resource = action_tuple.resource or "*"
             if action_tuple.not_resource:
-                resource += f" EXCEPT {action_tuple.not_resource}"
+                if res["ineffective_permissions"][service][resource].get("NotResource"):
+                    res["ineffective_permissions"][service][resource][
+                        "NotResource"
+                    ].append(action_tuple.not_resource)
+                else:
+                    res["ineffective_permissions"][service][resource]["NotResource"] = [
+                        action_tuple.not_resource
+                    ]
             access_level = self.policy_expander.get_action_access_level(
                 action_tuple.action
             )
@@ -673,19 +704,18 @@ class EffectivePolicyEvaluator:
 
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
-        if (
-            permission_boundary.allowed_permissions
-            or permission_boundary.denied_permissions
-        ):
-            final_permissions, more_ineffective_permissions = apply_permission_boundary(
-                final_permissions, permission_boundary
-            )
-            ineffective_permissions.update(more_ineffective_permissions)
+        for boundary in (permission_boundary, self.scp_policy):
+            if boundary.allowed_permissions or boundary.denied_permissions:
+                (
+                    final_permissions,
+                    more_ineffective_permissions,
+                ) = apply_permission_boundary(final_permissions, boundary)
+                ineffective_permissions.update(more_ineffective_permissions)
 
-        denied_permissions = deep_update(
-            direct_permissions.denied_permissions,
-            permission_boundary.denied_permissions,
-        )
+            denied_permissions = deep_update(
+                direct_permissions.denied_permissions,
+                boundary.denied_permissions,
+            )
 
         return PermissionsContainer(
             allowed_permissions=final_permissions,

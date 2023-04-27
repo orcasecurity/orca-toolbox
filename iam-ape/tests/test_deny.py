@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional, Set, Tuple
 
 from iam_ape.evaluator import should_deny
-from iam_ape.helper_types import Action
+from iam_ape.helper_classes import Action
 
 action = "kms:CreateKey"
 resource_wide = "arn:aws:kms:us-east-1:123456789012:*"

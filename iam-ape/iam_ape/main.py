@@ -4,18 +4,20 @@ import logging
 import os
 import re
 import sys
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-import boto3  # type: ignore
-from botocore.exceptions import ProfileNotFound  # type: ignore
+import boto3
+from botocore.exceptions import ClientError, ProfileNotFound
 
 from iam_ape.aws_iam_actions.scrape_iam_actions import scrape_iam_actions
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
+from iam_ape.helper_classes import PolicyWithSource
 from iam_ape.helper_functions import deep_update
 from iam_ape.helper_types import AwsPolicyType, EntityType, FinalReportT
 
 logger = logging.getLogger("IAM-APE")
-entity_regex_string = r"arn:aws(-cn|-us-gov)?:iam::\d{12}:(user|group|role)/[\w-]+"
+logging.getLogger("botocore").setLevel(logging.WARNING)  # suppress botocore logs
+entity_regex_string = r"arn:aws(-cn|-us-gov)?:iam::(?P<account>\d{12}):(?P<entity_type>user|group|role)/[\w-]+"
 entity_regex = re.compile(entity_regex_string)
 
 banner = """
@@ -66,20 +68,24 @@ def initialize_logger() -> None:
     logging.root.setLevel(logging.INFO)
 
 
-def validate_arn(arn: str) -> EntityType:
+def validate_arn(arn: str) -> Tuple[EntityType, str]:
+    regex_match = entity_regex.fullmatch(arn)
     try:
-        assert entity_regex.match(arn)
+        assert regex_match
     except AssertionError:
         raise ValueError(
             f'Invalid ARN format: "{arn}". Expected: "{entity_regex_string}"'
         )
 
-    if ":user/" in arn:
-        return EntityType.user
-    elif ":group/" in arn:
-        return EntityType.group
+    entity_type = regex_match.group("entity_type")
+    account_id = regex_match.group("account")
+
+    if entity_type == "user":
+        return EntityType.user, account_id
+    elif entity_type == "group":
+        return EntityType.group, account_id
     else:
-        return EntityType.role
+        return EntityType.role, account_id
 
 
 def load_auth_details_from_json(inp: str) -> AuthorizationDetails:
@@ -103,6 +109,81 @@ def load_auth_details_from_aws(profile: Optional[str] = None) -> AuthorizationDe
     return a
 
 
+def load_scp_from_json(inp: str) -> PolicyWithSource:
+    with open(inp) as f:
+        policy_description = json.load(f)
+        return PolicyWithSource(
+            policy_description["Policy"]["PolicySummary"]["Arn"],
+            json.loads(policy_description["Policy"]["Content"]),
+        )
+
+
+def load_scp_from_aws(
+    account_id: str, profile: Optional[str] = None
+) -> List[PolicyWithSource]:
+    logger.info("Attempting to fetch service control policies from AWS...")
+    profile = profile or os.environ.get("AWS_PROFILE")
+    policies = []
+
+    if not profile:
+        raise ValueError("No AWS profile found")
+
+    boto3.setup_default_session(profile_name=profile)
+    org_client = boto3.client("organizations")
+    paginator = org_client.get_paginator("list_policies_for_target")
+
+    for page in paginator.paginate(
+        TargetId=account_id, Filter="SERVICE_CONTROL_POLICY"
+    ):
+        for policy in page["Policies"]:
+            policy_description = org_client.describe_policy(PolicyId=policy["Id"])
+            policies.append(
+                PolicyWithSource(
+                    policy_description["Policy"]["PolicySummary"]["Arn"],
+                    json.loads(policy_description["Policy"]["Content"]),
+                )
+            )
+
+    return policies
+
+
+def get_auth_details(input_path: str, profile: str) -> AuthorizationDetails:
+    if input_path:
+        auth_details = load_auth_details_from_json(input_path)
+    else:
+        auth_details = load_auth_details_from_aws(profile)
+    return auth_details
+
+
+def get_scp_policies(
+    scp_policy_arg: Optional[str], profile: Optional[str], entity_account: str
+) -> List[PolicyWithSource]:
+    policy_jsons = []
+    if scp_policy_arg:
+        scp_policy_paths = (
+            scp_policy_arg.split(",")
+            if "," in scp_policy_arg
+            else scp_policy_arg.split(" ")
+        )
+        for policy_path in scp_policy_paths:
+            policy_jsons.append(load_scp_from_json(inp=policy_path))
+
+    elif profile:
+        try:
+            policy_jsons.extend(
+                load_scp_from_aws(profile=profile, account_id=entity_account)
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "AWSOrganizationsNotInUseException":
+                logger.debug("SCP Policies not in use for this account")
+            elif e.response["Error"]["Code"] == "AccessDeniedException":
+                logger.info(
+                    "Could not fetch SCP policies due to insufficient permissions"
+                )
+
+    return policy_jsons
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     arg_parser = argparse.ArgumentParser()
     basic_usage = arg_parser.add_argument_group()
@@ -118,6 +199,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "-i",
         "--input",
         help='Path to report generated by "aws iam get-account-authorization-details"',
+        required=False,
+    )
+    adv_usage.add_argument(
+        "-s",
+        "--scp-policy",
+        help='Path to report(s) generated by "aws organizations describe-policy --policy-id <SCP_Policy_ID>"',
         required=False,
     )
     adv_usage.add_argument(
@@ -175,25 +262,27 @@ def main() -> int:
             return 0
 
     try:
-        entity_type = validate_arn(arguments.arn)
+        entity_type, entity_account = validate_arn(arguments.arn)
     except ValueError as e:
         logger.error(e)
         return -1
 
-    if arguments.input:
-        auth_details = load_auth_details_from_json(arguments.input)
-    else:
-        try:
-            auth_details = load_auth_details_from_aws(arguments.profile)
-        except ValueError as e:
-            logger.error(e)
-            return -1
-        except ProfileNotFound as e:
-            logger.error(e)
-            return -1
+    try:
+        auth_details = get_auth_details(arguments.input, arguments.profile)
+    except (ValueError, ProfileNotFound) as e:
+        logger.error(e)
+        return -1
+
+    scp_policies = None
+    if arguments.input is None or arguments.scp_policy is not None:
+        scp_policies = get_scp_policies(
+            arguments.scp_policy, arguments.profile, entity_account
+        )
 
     logger.info("Evaluating effective permissions")
-    calculator = EffectivePolicyEvaluator(auth_details)
+    calculator = EffectivePolicyEvaluator(
+        authorization_details=auth_details, scp_policies=scp_policies
+    )
 
     try:
         res = calculator.evaluate(arn=arguments.arn, entity_type=entity_type)
@@ -212,7 +301,10 @@ def main() -> int:
         logger.info(json.dumps(out, indent=2))
     else:
         with open(arguments.output, "w") as f:
-            json.dump(out, f)
+            json.dump(out, f, indent=2)
+        logger.info(
+            f"Wrote effective permissions for {arguments.arn} to {arguments.output}"
+        )
 
     return 0
 
