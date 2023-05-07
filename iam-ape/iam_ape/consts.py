@@ -3,7 +3,6 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-
 RESOURCE_ARN_RE = re.compile("arn:(aws|aws-gov|aws-china):(?P<service>[^:]+):.*")
 
 
