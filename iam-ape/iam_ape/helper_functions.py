@@ -124,7 +124,7 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
 
 
 def negate_condition(condition: Dict[str, Any]) -> Dict[str, Any]:
-    res_condition = deepcopy(condition)
+    res_condition = condition.copy()
     condition_prefix = None
     condition_key, condition_value = list(res_condition.items())[0]
 
@@ -147,13 +147,16 @@ def negate_condition(condition: Dict[str, Any]) -> Dict[str, Any]:
             return {f"{negated}IfExists": condition_value}
 
     if condition_key.lower() in ("bool", "null"):
-        for _condition, _values in condition_value.items():
-            if all(v.lower() == "false" for v in _values):
-                condition_value[_condition] = HashableList(["true"])
-            elif all(v.lower() == "true" for v in _values):
-                condition_value[_condition] = HashableList(["false"])
-            else:
-                condition_value[_condition] = HashableList(["true", "false"])
+        condition_value = {
+            _condition: (
+                HashableList(["true"])
+                if all(v.lower() == "false" for v in _values)
+                else HashableList(["false"])
+                if all(v.lower() == "true" for v in _values)
+                else HashableList(["true", "false"])
+            )
+            for _condition, _values in condition_value.items()
+        }
 
     if condition_key == "BinaryEquals":  # there is no bloody negation
         logger.info(f"BinaryEquals used in a deny condition: {condition}")
