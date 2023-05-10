@@ -12,24 +12,13 @@ from iam_ape.helper_types import (
 
 
 class HashableList(List[Any]):
-    def flatten(self, list_obj: List[Any]) -> List[Any]:
-        all_items = []
-        for item in list_obj:
-            if hasattr(item, "__hash__"):
-                all_items.append(item)
-            elif isinstance(item, list):
-                all_items.extend(self.flatten(item))
-            else:
-                raise TypeError(f"Unhashable type: {type(item)}")
-        return all_items
-
     def __hash__(self) -> int:  # type: ignore[override]
-        return hash(tuple(sorted(self.flatten(self))))
+        return hash(tuple(self))
 
 
 class HashableDict(Dict[Any, Any]):
     def __hash__(self) -> int:  # type: ignore[override]
-        return hash(tuple(sorted(self.items())))
+        return hash(tuple(self.items()))
 
     @classmethod
     def recursively(cls, dict_obj: Optional[Dict[Any, Any]]):
@@ -37,10 +26,13 @@ class HashableDict(Dict[Any, Any]):
             return dict_obj
         for key, value in dict_obj.items():
             if isinstance(value, dict):
-                dict_obj[key] = HashableDict.recursively(value)
+                dict_obj[key] = cls.recursively(value)
             elif isinstance(value, list):
                 dict_obj[key] = HashableList(value)
-        return HashableDict(dict_obj)
+            else:
+                assert hasattr(value, "__hash__"), f"Unhashable type: {type(value)}"
+                dict_obj[key] = value
+        return cls(dict_obj)
 
 
 @dataclass(unsafe_hash=True)

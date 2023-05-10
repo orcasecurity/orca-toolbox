@@ -7,7 +7,7 @@ from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple
 
 from requests.structures import CaseInsensitiveDict
 
-from iam_ape.consts import PolicyElement, actions_json_location
+from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
 from iam_ape.helper_classes import (
     Action,
     HashableDict,
@@ -24,12 +24,29 @@ logger = logging.getLogger("policy expander")
 def _append_action(
     res: Dict[str, Set[Action]],
     action: str,
+    service: str,
     resources: Optional[List[str]],
     not_resources: Optional[List[str]],
     condition: Optional[Dict[str, Any]],
     source: str,
 ) -> None:
+    def relevant_resource(resource: str, service: str) -> bool:
+        if resource.lower() in (
+            "*",
+            "arn:*",
+            "arn:aws:*",
+            "arn:aws-gov:*",
+            "arn:aws-china:*",
+        ):
+            return True
+        if match := RESOURCE_ARN_RE.match(resource):
+            res_service = match.group("service")
+            return res_service.lower() == service.lower()
+        return False
+
     for resource in resources or []:
+        if not relevant_resource(resource, service):
+            continue
         if condition:
             for key, val in condition.items():
                 res[action].add(
@@ -52,6 +69,8 @@ def _append_action(
                 )
             )
     for not_resource in not_resources or []:
+        if not relevant_resource(not_resource, service):
+            continue
         if condition:
             for key, val in condition.items():
                 res[action].add(
@@ -143,42 +162,45 @@ class PolicyExpander:
 
     def expand_action(self, iam_action: Action) -> Dict[str, Set[Action]]:
         res: Dict[str, Set[Action]] = defaultdict(set)
-
-        if iam_action.action == PolicyElement.WILDCARD:  # {"Action": ["*"]}
-            for service, action_dicts in self.all_iam_actions.items():
-                for action in action_dicts.keys():
-                    _append_action(
-                        res=res,
-                        action=f"{service}:{action}",
-                        resources=as_list(iam_action.resource),
-                        not_resources=as_list(iam_action.not_resource),
-                        condition=iam_action.condition,
-                        source=iam_action.source,
-                    )
-        elif PolicyElement.WILDCARD in iam_action.action:  # {"Action": ["iam:*"]}
-            service, wildcard_action = iam_action.action.split(":", maxsplit=1)
-            for action in self.all_iam_actions[service].keys():
-                if fnmatch(action.lower(), wildcard_action.lower()):
-                    _append_action(
-                        res=res,
-                        action=f"{service}:{action}",
-                        resources=as_list(iam_action.resource),
-                        not_resources=as_list(iam_action.not_resource),
-                        condition=iam_action.condition,
-                        source=iam_action.source,
-                    )
-        else:  # {"Action": ["sts:GetCallerIdentity"]}
-            try:
+        try:
+            if iam_action.action == PolicyElement.WILDCARD:  # {"Action": ["*"]}
+                for service, action_dicts in self.all_iam_actions.items():
+                    for action in action_dicts.keys():
+                        _append_action(
+                            res=res,
+                            service=service,
+                            action=f"{service}:{action}",
+                            resources=as_list(iam_action.resource),
+                            not_resources=as_list(iam_action.not_resource),
+                            condition=iam_action.condition,
+                            source=iam_action.source,
+                        )
+            elif PolicyElement.WILDCARD in iam_action.action:  # {"Action": ["iam:*"]}
+                service, wildcard_action = iam_action.action.split(":", maxsplit=1)
+                for action in self.all_iam_actions[service].keys():
+                    if fnmatch(action.lower(), wildcard_action.lower()):
+                        _append_action(
+                            res=res,
+                            service=service,
+                            action=f"{service}:{action}",
+                            resources=as_list(iam_action.resource),
+                            not_resources=as_list(iam_action.not_resource),
+                            condition=iam_action.condition,
+                            source=iam_action.source,
+                        )
+            else:  # {"Action": ["sts:GetCallerIdentity"]}
+                service, action = iam_action.action.split(":", maxsplit=1)
                 _append_action(
                     res=res,
+                    service=service,
                     action=self.normalize_action(iam_action.action),
                     resources=as_list(iam_action.resource),
                     not_resources=as_list(iam_action.not_resource),
                     condition=iam_action.condition,
                     source=iam_action.source,
                 )
-            except KeyError:  # not a valid action
-                logger.debug(f"Got an invalid action: {iam_action.action}")
+        except KeyError:  # not a valid action
+            logger.debug(f"Got an invalid action: {iam_action.action}")
 
         return res
 
@@ -207,6 +229,7 @@ class PolicyExpander:
                     _append_action(
                         res=res,
                         action=curr_action,
+                        service=iam_service,
                         resources=statement.get(PolicyElement.RESOURCE),
                         not_resources=statement.get(PolicyElement.NOTRESOURCE),
                         condition=statement.get(PolicyElement.CONDITION),
