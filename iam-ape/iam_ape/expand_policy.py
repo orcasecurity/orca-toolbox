@@ -30,18 +30,20 @@ def _append_action(
     condition: Optional[Dict[str, Any]],
     source: str,
 ) -> None:
-    def relevant_resource(resource: str, service: str) -> bool:
+    def relevant_resource(resource: str, action_service: str) -> bool:
         if resource.lower() in (
             "*",
             "arn:*",
             "arn:aws:*",
-            "arn:aws-gov:*",
-            "arn:aws-china:*",
+            "arn:aws-cn:*",
+            "arn:aws-us-gov:*",
         ):
             return True
         if match := RESOURCE_ARN_RE.match(resource):
-            res_service = match.group("service")
-            return res_service.lower() == service.lower()
+            resource_service = match.group("service").lower()
+            if resource_service == "iam" and action_service == "sts":
+                return True
+            return resource_service == action_service.lower()
         return False
 
     for resource in resources or []:
