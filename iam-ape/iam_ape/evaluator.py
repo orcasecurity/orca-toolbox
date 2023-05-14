@@ -7,7 +7,12 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from iam_ape.consts import PolicyElement
 from iam_ape.expand_policy import PolicyExpander
-from iam_ape.helper_classes import Action, IneffectiveAction, PermissionsContainer, PolicyWithSource
+from iam_ape.helper_classes import (
+    Action,
+    IneffectiveAction,
+    PermissionsContainer,
+    PolicyWithSource,
+)
 from iam_ape.helper_functions import (
     deep_update,
     get_default_policy_for_managed_policy,
