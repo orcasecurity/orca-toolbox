@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "iam-ape"
-version = "1.1.1"
+version = "1.1.2"
 description = "IAM AWS Permissions Evaluator"
 authors = ["Tohar Braun, Orca Security <tohar@orca.security>"]
 license = "GPL-3.0-or-later"
@@ -38,6 +38,10 @@ iam-ape = ["iam_ape/aws_iam_actions/*.tar.gz", "iam_ape/py.typed"]
 
 [tool.poetry.scripts]
 iam-ape = "iam_ape.main:main"
+
+[tool.isort]
+profile = "black"
+line_length = 120
 
 [build-system]
 requires = ["poetry-core"]
