@@ -3,12 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from iam_ape.consts import PolicyElement
-from iam_ape.helper_types import (
-    ActionDict,
-    AwsPolicyType,
-    IneffectiveActionDict,
-    PermissionsContainerDict,
-)
+from iam_ape.helper_types import ActionDict, AwsPolicyType, IneffectiveActionDict, PermissionsContainerDict
 
 
 class HashableList(List[Any]):

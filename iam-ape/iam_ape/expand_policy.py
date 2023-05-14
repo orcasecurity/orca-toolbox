@@ -8,13 +8,7 @@ from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple
 from requests.structures import CaseInsensitiveDict
 
 from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
-from iam_ape.helper_classes import (
-    Action,
-    HashableDict,
-    HashableList,
-    PermissionsContainer,
-    PolicyWithSource,
-)
+from iam_ape.helper_classes import Action, HashableDict, HashableList, PermissionsContainer, PolicyWithSource
 from iam_ape.helper_functions import as_list, normalize_policy
 from iam_ape.helper_types import AwsPolicyStatementType, AwsPolicyType
 

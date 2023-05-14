@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import tarfile
 import tempfile
 from collections import defaultdict
@@ -71,12 +72,13 @@ def scrape_iam_actions() -> int:
 
     logger.info("Done!")
 
-    with tempfile.NamedTemporaryFile("w+") as f:
+    tmpf = os.path.join(tempfile.gettempdir(), os.urandom(24).hex())
+    with open(tmpf, "w+") as f:
         json.dump(data, f, indent=2)
         f.flush()
-
         with tarfile.open(actions_json_location, "w:gz") as tar:
             tar.add(f.name, arcname="actions.json")
+    os.remove(tmpf)
 
     return 0
 
