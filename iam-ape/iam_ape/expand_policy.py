@@ -95,17 +95,22 @@ def _append_action(
 
 
 class PolicyExpander:
-    def __init__(self) -> None:
-        self.all_iam_actions: CaseInsensitiveDict = self._init_iam_actions()
+    def __init__(self, all_iam_actions_file_location: Optional[str] = None) -> None:
+        self.all_iam_actions: CaseInsensitiveDict = self._init_iam_actions(
+            all_iam_actions_file_location
+        )
         self._all_service_wildcards: List[str] = [
             f"{k}:*" for k, v in self.all_iam_actions.items() if len(v) > 0
         ]
 
     @staticmethod
-    def _init_iam_actions() -> CaseInsensitiveDict:
+    def _init_iam_actions(
+        all_iam_actions_file_location: Optional[str] = None,
+    ) -> CaseInsensitiveDict:
         res: CaseInsensitiveDict = CaseInsensitiveDict()
+        file_path = all_iam_actions_file_location or actions_json_location
         try:
-            with tarfile.open(actions_json_location) as f:
+            with tarfile.open(file_path) as f:
                 data = json.load(f.extractfile("actions.json"))  # type: ignore
                 for k, v in data.items():
                     res[k] = CaseInsensitiveDict(v)
