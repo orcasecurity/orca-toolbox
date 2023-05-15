@@ -1,10 +1,9 @@
 import json
 import logging
-import re
 from collections import defaultdict
 from dataclasses import replace
 from fnmatch import fnmatch
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from iam_ape.consts import PolicyElement
 from iam_ape.expand_policy import PolicyExpander
@@ -475,9 +474,10 @@ class EffectivePolicyEvaluator:
         self,
         authorization_details: AuthorizationDetails,
         scp_policies: Optional[List[PolicyWithSource]] = None,
+        policy_expander: Optional[PolicyExpander] = None,
     ) -> None:
         self.auth_details = authorization_details
-        self.policy_expander = PolicyExpander()
+        self.policy_expander = policy_expander or PolicyExpander()
         self.scp_policy = (
             self.policy_expander.expand_policies(scp_policies)
             if scp_policies
@@ -639,18 +639,6 @@ class EffectivePolicyEvaluator:
 
         return res
 
-    def get_managed_policies(
-        self, managed_policies: List[Dict[str, str]]
-    ) -> List[PolicyWithSource]:
-        res = []
-        for policy_details in managed_policies:
-            policy_arn = policy_details["PolicyArn"]
-            policy = get_default_policy_for_managed_policy(
-                self.auth_details.Policy.get(policy_arn, {})
-            )
-            res.append(PolicyWithSource(policy=policy, source=policy_arn))
-        return res
-
     def get_direct_policies(
         self, entity_obj: Dict[str, Any], entity_type: EntityType
     ) -> List[PolicyWithSource]:
@@ -660,10 +648,27 @@ class EffectivePolicyEvaluator:
             )
             for policy in entity_obj.get(f"{entity_type.value}PolicyList", [])
         ]
-        managed_policies = self.get_managed_policies(
-            entity_obj.get("AttachedManagedPolicies", [])
+        managed_policies = list(
+            self.get_managed_policies(entity_obj.get("AttachedManagedPolicies", []))
         )
         return managed_policies + inline_policies
+
+    def get_group_object_by_name(self, group_name: str) -> Optional[Dict[str, Any]]:
+        for group in self.auth_details.Group.values():
+            if group["GroupName"] == group_name:
+                return group
+        logger.warning(f"No such group {group_name}")
+        return None
+
+    def get_managed_policies(
+        self, managed_policies: List[Dict[str, str]]
+    ) -> Iterator[PolicyWithSource]:
+        for policy_details in managed_policies:
+            policy_arn = policy_details["PolicyArn"]
+            policy = get_default_policy_for_managed_policy(
+                self.auth_details.Policy.get(policy_arn, {})
+            )
+            yield PolicyWithSource(policy=policy, source=policy_arn)
 
     def get_permission_boundary(self, entity: Dict[str, Any]) -> PermissionsContainer:
         permissions = PermissionsContainer()
@@ -691,11 +696,11 @@ class EffectivePolicyEvaluator:
         indirect_policies: List[PolicyWithSource] = []
         if entity_type == EntityType.user:
             for group in entity_obj.get("GroupList", []):
-                group_arn = re.sub(":user/.*", f":group/{group}", entity_obj["Arn"])
-                group_obj = self.auth_details.Group[group_arn]
-                indirect_policies.extend(
-                    self.get_direct_policies(group_obj, EntityType.group)
-                )
+                group_obj = self.get_group_object_by_name(group)
+                if group_obj:
+                    indirect_policies.extend(
+                        self.get_direct_policies(group_obj, EntityType.group)
+                    )
 
         direct_permissions = self.policy_expander.expand_policies(
             direct_policies + indirect_policies

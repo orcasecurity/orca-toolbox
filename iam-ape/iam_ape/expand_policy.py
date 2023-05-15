@@ -30,18 +30,20 @@ def _append_action(
     condition: Optional[Dict[str, Any]],
     source: str,
 ) -> None:
-    def relevant_resource(resource: str, service: str) -> bool:
+    def relevant_resource(resource: str, action_service: str) -> bool:
         if resource.lower() in (
             "*",
             "arn:*",
             "arn:aws:*",
-            "arn:aws-gov:*",
-            "arn:aws-china:*",
+            "arn:aws-cn:*",
+            "arn:aws-us-gov:*",
         ):
             return True
         if match := RESOURCE_ARN_RE.match(resource):
-            res_service = match.group("service")
-            return res_service.lower() == service.lower()
+            resource_service = match.group("service").lower()
+            if resource_service == "iam" and action_service == "sts":
+                return True
+            return resource_service == action_service.lower()
         return False
 
     for resource in resources or []:
@@ -95,17 +97,22 @@ def _append_action(
 
 
 class PolicyExpander:
-    def __init__(self) -> None:
-        self.all_iam_actions: CaseInsensitiveDict = self._init_iam_actions()
+    def __init__(self, all_iam_actions_file_location: Optional[str] = None) -> None:
+        self.all_iam_actions: CaseInsensitiveDict = self._init_iam_actions(
+            all_iam_actions_file_location
+        )
         self._all_service_wildcards: List[str] = [
             f"{k}:*" for k, v in self.all_iam_actions.items() if len(v) > 0
         ]
 
     @staticmethod
-    def _init_iam_actions() -> CaseInsensitiveDict:
+    def _init_iam_actions(
+        all_iam_actions_file_location: Optional[str] = None,
+    ) -> CaseInsensitiveDict:
         res: CaseInsensitiveDict = CaseInsensitiveDict()
+        file_path = all_iam_actions_file_location or actions_json_location
         try:
-            with tarfile.open(actions_json_location) as f:
+            with tarfile.open(file_path) as f:
                 data = json.load(f.extractfile("actions.json"))  # type: ignore
                 for k, v in data.items():
                     res[k] = CaseInsensitiveDict(v)
