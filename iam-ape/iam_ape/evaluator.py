@@ -3,7 +3,7 @@ import logging
 from collections import defaultdict
 from dataclasses import replace
 from fnmatch import fnmatch
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Literal
+from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
 
 from iam_ape.consts import PolicyElement
 from iam_ape.expand_policy import PolicyExpander
@@ -567,31 +567,35 @@ class EffectivePolicyEvaluator:
                     service = action_to_service(action_tuple.action)
                     resource = action_tuple.resource or "*"
                     if action_tuple.not_resource:
-                        if res[section][service][resource].get("NotResource"):
-                            res[section][service][resource]["NotResource"].add(
+                        if res[section][service][resource].get("NotResource"):  # type: ignore[literal-required]
+                            res[section][service][resource]["NotResource"].add(  # type: ignore[literal-required]
                                 action_tuple.not_resource
                             )
                         else:
-                            res[section][service][resource]["NotResource"] = {
+                            res[section][service][resource]["NotResource"] = {  # type: ignore[literal-required]
                                 action_tuple.not_resource
                             }
                     access_level = self.policy_expander.get_action_access_level(
                         action_tuple.action
                     )
                     if cond := merge_condition(
-                        res[section][service][resource][access_level]
+                        res[section][service][resource][access_level]  # type: ignore[literal-required]
                         .get(action_tuple.action, {})
                         .get("Condition", {}),
                         action_tuple.condition,
                         negate=False,
                         hashable=False,
                     ):
-                        res[section][service][resource][access_level][
+                        res[section][service][resource][access_level][  # type: ignore[literal-required]
                             action_tuple.action
-                        ]["Condition"] = cond
-                    res[section][service][resource][access_level][action_tuple.action][
+                        ][
+                            "Condition"
+                        ] = cond
+                    res[section][service][resource][access_level][action_tuple.action][  # type: ignore
                         "source"
-                    ].add(action_tuple.source)
+                    ].add(
+                        action_tuple.source
+                    )
 
         for action_tuple in permissions_container.ineffective_permissions:
             service = action_to_service(action_tuple.action)
