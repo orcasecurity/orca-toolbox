@@ -11,28 +11,29 @@ from iam_ape.helper_types import (
 )
 
 
-class HashableList(List[Any]):
+class HashableList(list):
     def __hash__(self) -> int:  # type: ignore[override]
-        return hash(tuple(self))
+        return hash(tuple(sorted(self)))
 
 
-class HashableDict(Dict[Any, Any]):
+class HashableDict(dict):
     def __hash__(self) -> int:  # type: ignore[override]
-        return hash(tuple(self.items()))
+        return hash(tuple(sorted(self.items())))
 
     @classmethod
     def recursively(cls, dict_obj: Optional[Dict[Any, Any]]):
         if dict_obj is None:
-            return dict_obj
+            return None
+        new_dict = {}
         for key, value in dict_obj.items():
             if isinstance(value, dict):
-                dict_obj[key] = cls.recursively(value)
+                new_dict[key] = cls.recursively(value)
             elif isinstance(value, list):
-                dict_obj[key] = HashableList(value)
+                new_dict[key] = HashableList(value)
             else:
                 assert hasattr(value, "__hash__"), f"Unhashable type: {type(value)}"
-                dict_obj[key] = value
-        return cls(dict_obj)
+                new_dict[key] = value
+        return cls(new_dict)
 
 
 @dataclass(unsafe_hash=True)

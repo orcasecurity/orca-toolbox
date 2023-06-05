@@ -3,7 +3,7 @@ import logging
 from collections import defaultdict
 from dataclasses import replace
 from fnmatch import fnmatch
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Literal
 
 from iam_ape.consts import PolicyElement
 from iam_ape.expand_policy import PolicyExpander
@@ -558,63 +558,40 @@ class EffectivePolicyEvaluator:
                 )
             ),
         }
-        # for section in ("allowed_permissions", "denied_permissions"):
-        for action_tuple_set in permissions_container.allowed_permissions.values():
-            for action_tuple in action_tuple_set:
-                service = action_to_service(action_tuple.action)
-                resource = action_tuple.resource or "*"
-                if action_tuple.not_resource:
-                    if res["allowed_permissions"][service][resource].get("NotResource"):
-                        res["allowed_permissions"][service][resource][
-                            "NotResource"
-                        ].append(action_tuple.not_resource)
-                    else:
-                        res["allowed_permissions"][service][resource]["NotResource"] = [
-                            action_tuple.not_resource
-                        ]
-                access_level = self.policy_expander.get_action_access_level(
-                    action_tuple.action
-                )
-                if cond := merge_condition(
-                    res["allowed_permissions"][service][resource][access_level]
-                    .get(action_tuple.action, {})
-                    .get("Condition", {}),
-                    action_tuple.condition,
-                    negate=False,
-                ):
-                    res["allowed_permissions"][service][resource][access_level][
+        sections: Tuple[
+            Literal["allowed_permissions"], Literal["denied_permissions"]
+        ] = ("allowed_permissions", "denied_permissions")
+        for section in sections:
+            for action_tuple_set in getattr(permissions_container, section).values():
+                for action_tuple in action_tuple_set:
+                    service = action_to_service(action_tuple.action)
+                    resource = action_tuple.resource or "*"
+                    if action_tuple.not_resource:
+                        if res[section][service][resource].get("NotResource"):
+                            res[section][service][resource]["NotResource"].add(
+                                action_tuple.not_resource
+                            )
+                        else:
+                            res[section][service][resource]["NotResource"] = {
+                                action_tuple.not_resource
+                            }
+                    access_level = self.policy_expander.get_action_access_level(
                         action_tuple.action
-                    ]["Condition"] = cond
-                res["allowed_permissions"][service][resource][access_level][
-                    action_tuple.action
-                ]["source"].add(action_tuple.source)
-
-        for action_tuple_set in permissions_container.denied_permissions.values():
-            for action_tuple in action_tuple_set:
-                service = action_to_service(action_tuple.action)
-                resource = action_tuple.resource or "*"
-                if action_tuple.not_resource:
-                    if res["denied_permissions"][service][resource].get("NotResource"):
-                        res["denied_permissions"][service][resource][
-                            "NotResource"
-                        ].append(action_tuple.not_resource)
-                    else:
-                        res["denied_permissions"][service][resource]["NotResource"] = [
-                            action_tuple.not_resource
-                        ]
-                access_level = self.policy_expander.get_action_access_level(
-                    action_tuple.action
-                )
-                if cond := merge_condition(
-                    res["denied_permissions"][service][resource][access_level]
-                    .get(action_tuple.action, {})
-                    .get("Condition", {}),
-                    action_tuple.condition,
-                    negate=False,
-                ):
-                    res["denied_permissions"][service][resource][access_level][
-                        action_tuple.action
-                    ]["Condition"] = cond
+                    )
+                    if cond := merge_condition(
+                        res[section][service][resource][access_level]
+                        .get(action_tuple.action, {})
+                        .get("Condition", {}),
+                        action_tuple.condition,
+                        negate=False,
+                        hashable=False,
+                    ):
+                        res[section][service][resource][access_level][
+                            action_tuple.action
+                        ]["Condition"] = cond
+                    res[section][service][resource][access_level][action_tuple.action][
+                        "source"
+                    ].add(action_tuple.source)
 
         for action_tuple in permissions_container.ineffective_permissions:
             service = action_to_service(action_tuple.action)
@@ -623,11 +600,11 @@ class EffectivePolicyEvaluator:
                 if res["ineffective_permissions"][service][resource].get("NotResource"):
                     res["ineffective_permissions"][service][resource][
                         "NotResource"
-                    ].append(action_tuple.not_resource)
+                    ].add(action_tuple.not_resource)
                 else:
-                    res["ineffective_permissions"][service][resource]["NotResource"] = [
+                    res["ineffective_permissions"][service][resource]["NotResource"] = {
                         action_tuple.not_resource
-                    ]
+                    }
             access_level = self.policy_expander.get_action_access_level(
                 action_tuple.action
             )
