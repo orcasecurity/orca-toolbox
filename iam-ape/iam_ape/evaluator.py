@@ -3,7 +3,7 @@ import logging
 from collections import defaultdict
 from dataclasses import replace
 from fnmatch import fnmatch
-from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from iam_ape.consts import PolicyElement
 from iam_ape.expand_policy import PolicyExpander
@@ -558,9 +558,7 @@ class EffectivePolicyEvaluator:
                 )
             ),
         }
-        sections: Tuple[
-            Literal["allowed_permissions"], Literal["denied_permissions"]
-        ] = ("allowed_permissions", "denied_permissions")
+        sections = ("allowed_permissions", "denied_permissions")
         for section in sections:
             for action_tuple_set in getattr(permissions_container, section).values():
                 for action_tuple in action_tuple_set:
