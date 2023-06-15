@@ -2,7 +2,6 @@ import json
 import logging
 from collections import defaultdict
 from dataclasses import replace
-from fnmatch import fnmatch
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from iam_ape.consts import PolicyElement
@@ -18,6 +17,7 @@ from iam_ape.helper_functions import (
     get_default_policy_for_managed_policy,
     merge_condition,
     normalize_policy,
+    wildcard_match,
 )
 from iam_ape.helper_types import EntityType, FinalReportT
 
@@ -53,7 +53,7 @@ def should_deny(
                             source=iam_action.source,
                         )
                     )
-                elif fnmatch(
+                elif wildcard_match(
                     iam_action.resource, denied_action.resource
                 ):  # denied Resource > allowed Resource
                     if not denied_action.condition:
@@ -70,7 +70,7 @@ def should_deny(
                             source=iam_action.source,
                         )
                     )
-                elif fnmatch(
+                elif wildcard_match(
                     denied_action.resource, iam_action.resource
                 ):  # allowed Resource > denied Resource
                     partially_denied = True
@@ -106,11 +106,11 @@ def should_deny(
             if denied_action.not_resource:
                 if denied_action.not_resource == iam_action.resource:
                     pass
-                elif fnmatch(
+                elif wildcard_match(
                     iam_action.resource, denied_action.not_resource
                 ):  # denied NotResource > allowed Resource
                     pass
-                elif fnmatch(
+                elif wildcard_match(
                     denied_action.not_resource, iam_action.resource
                 ):  # denied NotResource < allowed Resource
                     partially_denied = True
@@ -131,11 +131,11 @@ def should_deny(
             if denied_action.resource:
                 if denied_action.resource == iam_action.not_resource:
                     pass
-                elif fnmatch(
+                elif wildcard_match(
                     denied_action.resource, iam_action.not_resource
                 ):  # allowed NotResource > denied Resource
                     pass
-                elif fnmatch(
+                elif wildcard_match(
                     iam_action.not_resource, denied_action.resource
                 ):  # denied Resource > allowed NotResource
                     partially_denied = True
@@ -180,11 +180,11 @@ def should_deny(
                             source=iam_action.source,
                         )
                     )
-                elif fnmatch(
+                elif wildcard_match(
                     denied_action.not_resource, iam_action.not_resource
                 ):  # allowed NotResource > denied NotResource
                     pass
-                elif fnmatch(
+                elif wildcard_match(
                     iam_action.not_resource, denied_action.not_resource
                 ):  # denied NotResource > allowed NotResource
                     partially_denied = True
@@ -300,11 +300,15 @@ def apply_permission_boundary(
                             new_allow_actions[action_key].add(
                                 permit(action_tuple, boundary_tuple)
                             )  # action is permitted
-                        elif fnmatch(action_tuple.resource, boundary_tuple.resource):
+                        elif wildcard_match(
+                            action_tuple.resource, boundary_tuple.resource
+                        ):
                             new_allow_actions[action_key].add(
                                 permit(action_tuple, boundary_tuple)
                             )  # action is permitted
-                        elif fnmatch(boundary_tuple.resource, action_tuple.resource):
+                        elif wildcard_match(
+                            boundary_tuple.resource, action_tuple.resource
+                        ):
                             new_allow_actions[action_key].add(
                                 replace(
                                     action_tuple,
@@ -328,13 +332,13 @@ def apply_permission_boundary(
                             ineffective_permissions.add(
                                 deny(action_tuple, permission_boundary_id)
                             )
-                        elif fnmatch(
+                        elif wildcard_match(
                             action_tuple.resource, boundary_tuple.not_resource
                         ):  # action is not permitted
                             ineffective_permissions.add(
                                 deny(action_tuple, permission_boundary_id)
                             )
-                        elif fnmatch(
+                        elif wildcard_match(
                             boundary_tuple.not_resource, action_tuple.resource
                         ):  # action is partially permitted
                             new_allow_actions[action_key].add(
@@ -360,7 +364,7 @@ def apply_permission_boundary(
                             ineffective_permissions.add(
                                 deny(action_tuple, permission_boundary_id)
                             )
-                        elif fnmatch(
+                        elif wildcard_match(
                             action_tuple.not_resource, boundary_tuple.resource
                         ):  # action is partially permitted
                             new_allow_actions[action_key].add(
@@ -374,7 +378,7 @@ def apply_permission_boundary(
                                     ),
                                 )
                             )
-                        elif fnmatch(
+                        elif wildcard_match(
                             boundary_tuple.resource, action_tuple.not_resource
                         ):  # action is not permitted
                             ineffective_permissions.add(
@@ -401,7 +405,7 @@ def apply_permission_boundary(
                             new_allow_actions[action_key].add(
                                 permit(action_tuple, boundary_tuple)
                             )
-                        elif fnmatch(
+                        elif wildcard_match(
                             action_tuple.not_resource, boundary_tuple.not_resource
                         ):  # action is partially permitted
                             new_allow_actions[action_key].add(
@@ -410,7 +414,7 @@ def apply_permission_boundary(
                                     not_resource=boundary_tuple.not_resource,
                                 )
                             )
-                        elif fnmatch(
+                        elif wildcard_match(
                             boundary_tuple.not_resource, action_tuple.not_resource
                         ):  # action is permitted
                             new_allow_actions[action_key].add(

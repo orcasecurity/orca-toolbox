@@ -15,7 +15,7 @@ from iam_ape.helper_classes import (
     PermissionsContainer,
     PolicyWithSource,
 )
-from iam_ape.helper_functions import as_list, normalize_policy
+from iam_ape.helper_functions import as_list, normalize_policy, wildcard_match
 from iam_ape.helper_types import AwsPolicyStatementType, AwsPolicyType
 
 logger = logging.getLogger("policy expander")
@@ -228,7 +228,7 @@ class PolicyExpander:
                     curr_action_lower = curr_action.lower()
                     if any(
                         [
-                            fnmatch(curr_action_lower, not_action.lower())
+                            wildcard_match(curr_action_lower, not_action.lower())
                             for not_action in notactions
                         ]
                     ):
