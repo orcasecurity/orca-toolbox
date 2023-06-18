@@ -17,7 +17,7 @@ from iam_ape.helper_types import AwsPolicyType, EntityType, FinalReportT
 
 logger = logging.getLogger("IAM-APE")
 logging.getLogger("botocore").setLevel(logging.WARNING)  # suppress botocore logs
-entity_regex_string = r"arn:aws(-cn|-us-gov)?:iam::(?P<account>\d{12}):(?P<entity_type>user|group|role)/[\w-]+"
+entity_regex_string = r"arn:aws(-cn|-us-gov)?:iam::(?P<account>\d{12}):(?P<entity_type>user|group|role)(?P<path>(/[a-zA-Z0-9+=,.@_-]+)*)?/[a-zA-Z0-9+=,.@_-]+"  # noqa: E501
 entity_regex = re.compile(entity_regex_string)
 
 banner = """
