@@ -150,9 +150,9 @@ def negate_condition(condition: Dict[str, Any]) -> Dict[str, Any]:
         condition_value = {
             _condition: (
                 HashableList(["true"])
-                if all(v.lower() == "false" for v in _values)
+                if all(str(v).lower() == "false" for v in _values)
                 else HashableList(["false"])
-                if all(v.lower() == "true" for v in _values)
+                if all(str(v).lower() == "true" for v in _values)
                 else HashableList(["true", "false"])
             )
             for _condition, _values in condition_value.items()
@@ -171,6 +171,7 @@ def merge_condition(
     allow_cond: Optional[Dict[str, Any]],
     deny_cond: Optional[Dict[str, Any]],
     negate: Optional[bool] = True,
+    hashable: Optional[bool] = True,
 ) -> Optional[Dict[str, Any]]:
     res = None
 
@@ -180,7 +181,7 @@ def merge_condition(
     elif negate:
         if allow_cond and deny_cond:
             res = deep_update(allow_cond, negate_condition(deny_cond))
-        elif deny_cond and not allow_cond:
+        elif deny_cond:
             res = negate_condition(deny_cond)
 
     else:
@@ -189,7 +190,7 @@ def merge_condition(
         else:
             res = deny_cond
 
-    return HashableDict.recursively(res)
+    return HashableDict.recursively(res) if hashable else res
 
 
 def get_default_policy_for_managed_policy(
@@ -209,18 +210,11 @@ def deep_update(
     updated_mapping = mapping.copy()
     for updating_mapping in updating_mappings:
         for k, v in updating_mapping.items():
-            if (
-                k in updated_mapping
-                and isinstance(updated_mapping[k], dict)
-                and isinstance(v, dict)
-            ):
-                updated_mapping[k] = deep_update(updated_mapping[k], v)
-            elif (
-                k in updated_mapping
-                and isinstance(updated_mapping[k], list)
-                and isinstance(v, list)
-            ):
-                updated_mapping[k].extend(v)
+            if k in updated_mapping:
+                if isinstance(updated_mapping[k], dict) and isinstance(v, dict):
+                    updated_mapping[k] = deep_update(updated_mapping[k], v)
+                elif isinstance(updated_mapping[k], list) and isinstance(v, list):
+                    updated_mapping[k] = list(set(updated_mapping[k] + v))
             else:
                 updated_mapping[k] = v
     return updated_mapping
