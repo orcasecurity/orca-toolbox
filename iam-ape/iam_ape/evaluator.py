@@ -11,6 +11,8 @@ from iam_ape.helper_classes import (
     IneffectiveAction,
     PermissionsContainer,
     PolicyWithSource,
+    EntityNotFoundException,
+    PolicyNotFoundException,
 )
 from iam_ape.helper_functions import (
     deep_update,
@@ -273,7 +275,7 @@ def apply_permission_boundary(
         for values in permission_boundary.denied_permissions.values():
             for value in values:
                 return value.source
-        raise ValueError("Permission Boundary source not found")
+        raise PolicyNotFoundException("Permission Boundary source not found")
 
     permission_boundary_id = get_pb_id()
 
@@ -457,7 +459,8 @@ def apply_permission_boundary(
 class AuthorizationDetails(object):
     def __init__(self, auth_report: Optional[Dict[str, Any]] = None):
         if auth_report is None:
-            raise ValueError("Could not load account authorization details")
+            logger.error("Could not load account authorization details")
+            auth_report = {}
 
         self.User: Dict[str, Any] = {
             user["Arn"]: user for user in auth_report.get("UserDetailList", [])
@@ -648,10 +651,11 @@ class EffectivePolicyEvaluator:
     ) -> Iterator[PolicyWithSource]:
         for policy_details in managed_policies:
             policy_arn = policy_details["PolicyArn"]
-            policy = get_default_policy_for_managed_policy(
-                self.auth_details.Policy.get(policy_arn, {})
-            )
-            yield PolicyWithSource(policy=policy, source=policy_arn)
+            if policy_obj := self.auth_details.Policy.get(policy_arn):
+                policy = get_default_policy_for_managed_policy(policy_obj)
+                yield PolicyWithSource(policy=policy, source=policy_arn)
+            else:
+                PolicyNotFoundException(f"Couldn't find policy {policy_arn}")
 
     def get_permission_boundary(self, entity: Dict[str, Any]) -> PermissionsContainer:
         permissions = PermissionsContainer()
@@ -673,7 +677,7 @@ class EffectivePolicyEvaluator:
         entity_obj = getattr(self.auth_details, entity_type.value).get(arn)
         if not entity_obj:
             logger.error(f"Error - couldn't find entity with ARN {arn}")
-            raise ValueError(f"couldn't find entity with ARN {arn}")
+            raise EntityNotFoundException(f"couldn't find entity with ARN {arn}")
 
         direct_policies = self.get_direct_policies(entity_obj, entity_type)
         indirect_policies: List[PolicyWithSource] = []

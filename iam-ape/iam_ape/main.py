@@ -11,7 +11,12 @@ from botocore.exceptions import ClientError, ProfileNotFound
 
 from iam_ape.aws_iam_actions.scrape_iam_actions import scrape_iam_actions
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
-from iam_ape.helper_classes import PolicyWithSource
+from iam_ape.helper_classes import (
+    PolicyWithSource,
+    InvalidArnException,
+    AwsAuthorizationException,
+    IamApeException,
+)
 from iam_ape.helper_functions import deep_update
 from iam_ape.helper_types import AwsPolicyType, EntityType, FinalReportT
 
@@ -73,7 +78,7 @@ def validate_arn(arn: str) -> Tuple[EntityType, str]:
     try:
         assert regex_match
     except AssertionError:
-        raise ValueError(
+        raise InvalidArnException(
             f'Invalid ARN format: "{arn}". Expected: "{entity_regex_string}"'
         )
 
@@ -108,7 +113,7 @@ def load_auth_details_from_aws(profile: Optional[str] = None) -> AuthorizationDe
     ):
         logger.info("AWS Auth: Using environment variables")
     else:
-        raise ValueError(
+        raise AwsAuthorizationException(
             "AWS Auth: No authentication method found. "
             "Please set AWS_PROFILE (or use --profile) or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
         )
@@ -137,7 +142,7 @@ def load_scp_from_aws(
     policies = []
 
     if not profile:
-        raise ValueError("No AWS profile found")
+        raise AwsAuthorizationException("No AWS profile found")
 
     boto3.setup_default_session(profile_name=profile)
     org_client = boto3.client("organizations")
@@ -274,13 +279,13 @@ def main() -> int:
 
     try:
         entity_type, entity_account = validate_arn(arguments.arn)
-    except ValueError as e:
+    except InvalidArnException as e:
         logger.error(e)
         return -1
 
     try:
         auth_details = get_auth_details(arguments.input, arguments.profile)
-    except (ValueError, ProfileNotFound) as e:
+    except (AwsAuthorizationException, ProfileNotFound) as e:
         logger.error(e)
         return -1
 
@@ -297,7 +302,7 @@ def main() -> int:
 
     try:
         res = calculator.evaluate(arn=arguments.arn, entity_type=entity_type)
-    except ValueError as e:
+    except IamApeException as e:
         logger.error(e)
         return -1
 

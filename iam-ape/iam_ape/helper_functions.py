@@ -3,7 +3,12 @@ from fnmatch import fnmatch
 from typing import Any, Dict, List, Literal, Optional, Set, TypeVar
 
 from iam_ape.consts import CONDITIONS_NEGATIONS
-from iam_ape.helper_classes import HashableDict, HashableList
+from iam_ape.helper_classes import (
+    HashableDict,
+    HashableList,
+    MalformedPolicyDocumentException,
+    PolicyNotFoundException,
+)
 from iam_ape.helper_types import AwsPolicyType
 
 logger = logging.getLogger(__name__)
@@ -22,7 +27,7 @@ def as_list(element: Optional[Any]) -> List[Any]:
 def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
     def verify_type(subject: Any, subject_type: Any, err_msg: str) -> None:
         if not isinstance(subject, subject_type):
-            raise TypeError(err_msg)
+            raise MalformedPolicyDocumentException(err_msg)
 
     def normalize_dict(
         dict_to_norm: Dict[str, Any], fields: Optional[Set[str]] = None
@@ -47,7 +52,9 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
     }
 
     if not isinstance(policy, dict):
-        raise TypeError(f"Malformed policy. Expected dict, got: {type(policy)}")
+        raise MalformedPolicyDocumentException(
+            f"Malformed policy. Expected dict, got: {type(policy)}"
+        )
 
     for field in aws_policy_str_fields:
         verify_type(
@@ -199,7 +206,7 @@ def get_default_policy_for_managed_policy(
     for policy in managed_policy_obj.get("PolicyVersionList", []):
         if policy.get("IsDefaultVersion", False):
             return normalize_policy(policy["Document"])
-    raise ValueError(
+    raise PolicyNotFoundException(
         f"No default policy found for managed policy {managed_policy_obj['Arn']}"
     )
 
