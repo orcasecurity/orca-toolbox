@@ -4,6 +4,10 @@ from collections import defaultdict
 from dataclasses import replace
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
+from iam_ape.aws_iam_actions.exceptions import (
+    EntityNotFoundException,
+    PolicyNotFoundException,
+)
 from iam_ape.consts import PolicyElement
 from iam_ape.expand_policy import PolicyExpander
 from iam_ape.helper_classes import (
@@ -11,8 +15,6 @@ from iam_ape.helper_classes import (
     IneffectiveAction,
     PermissionsContainer,
     PolicyWithSource,
-    EntityNotFoundException,
-    PolicyNotFoundException,
 )
 from iam_ape.helper_functions import (
     deep_update,
@@ -677,7 +679,7 @@ class EffectivePolicyEvaluator:
         entity_obj = getattr(self.auth_details, entity_type.value).get(arn)
         if not entity_obj:
             logger.error(f"Error - couldn't find entity with ARN {arn}")
-            raise EntityNotFoundException(f"couldn't find entity with ARN {arn}")
+            raise EntityNotFoundException(arn)
 
         direct_policies = self.get_direct_policies(entity_obj, entity_type)
         indirect_policies: List[PolicyWithSource] = []

@@ -106,27 +106,3 @@ class DenialEvalResult:
     should_deny: bool
     new_action_values: Set[Action]
     denied_by: Optional[Action]
-
-
-class IamApeException(Exception):
-    pass
-
-
-class PolicyNotFoundException(IamApeException):
-    pass
-
-
-class EntityNotFoundException(IamApeException):
-    pass
-
-
-class MalformedPolicyDocumentException(IamApeException):
-    pass
-
-
-class InvalidArnException(IamApeException):
-    pass
-
-
-class AwsAuthorizationException(IamApeException):
-    pass

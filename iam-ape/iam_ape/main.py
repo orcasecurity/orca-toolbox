@@ -9,14 +9,14 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import boto3
 from botocore.exceptions import ClientError, ProfileNotFound
 
-from iam_ape.aws_iam_actions.scrape_iam_actions import scrape_iam_actions
-from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
-from iam_ape.helper_classes import (
-    PolicyWithSource,
-    InvalidArnException,
+from iam_ape.aws_iam_actions.exceptions import (
     AwsAuthorizationException,
     IamApeException,
+    InvalidArnException,
 )
+from iam_ape.aws_iam_actions.scrape_iam_actions import scrape_iam_actions
+from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
+from iam_ape.helper_classes import PolicyWithSource
 from iam_ape.helper_functions import deep_update
 from iam_ape.helper_types import AwsPolicyType, EntityType, FinalReportT
 
@@ -78,9 +78,7 @@ def validate_arn(arn: str) -> Tuple[EntityType, str]:
     try:
         assert regex_match
     except AssertionError:
-        raise InvalidArnException(
-            f'Invalid ARN format: "{arn}". Expected: "{entity_regex_string}"'
-        )
+        raise InvalidArnException(arn, entity_regex_string)
 
     entity_type = regex_match.group("entity_type")
     account_id = regex_match.group("account")
