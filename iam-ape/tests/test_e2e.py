@@ -2,7 +2,7 @@ import json
 import os
 
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
-from iam_ape.helper_classes import PolicyWithSource
+from iam_ape.helper_classes import HashableDict, PolicyWithSource
 from iam_ape.helper_types import EntityType
 
 expected_result = {
@@ -44,7 +44,7 @@ expected_result = {
         },
         {
             "Effect": "Allow",
-            "Action": ["s3:GetObject", "s3:ListBucket"],
+            "Action": ["s3:Get*", "s3:List*", "s3:CreateBucket", "s3:CreateJob"],
             "Resource": [
                 "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1",
                 "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1/*",
@@ -100,11 +100,8 @@ def test_e2e() -> None:
 
     minimized_policy = evaluator.policy_expander.shrink_policy(res.allowed_permissions)
     assert len(minimized_policy["Statement"]) == 3
-    assert all(
-        [
-            statement in minimized_policy["Statement"]
-            for statement in expected_result["Statement"]
-        ]
+    assert hash(HashableDict.recursively(minimized_policy)) == hash(  # type: ignore
+        HashableDict.recursively(expected_result)
     )
 
     json_report = evaluator.create_json_report(res)

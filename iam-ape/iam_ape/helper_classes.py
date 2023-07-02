@@ -12,8 +12,19 @@ from iam_ape.helper_types import (
 
 
 class HashableList(list):
+    def __init__(self, lst: list) -> None:
+        super().__init__()
+        for item in lst:
+            if isinstance(item, dict):
+                self.append(HashableDict.recursively(item))
+            elif isinstance(item, list):
+                self.append(HashableList(item))
+            else:
+                assert hasattr(item, "__hash__"), f"Unhashable type: {type(item)}"
+                self.append(item)
+
     def __hash__(self) -> int:  # type: ignore[override]
-        return hash(tuple(sorted(self)))
+        return hash(frozenset(self))
 
 
 class HashableDict(dict):

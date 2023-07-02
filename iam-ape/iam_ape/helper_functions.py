@@ -2,7 +2,8 @@ import logging
 from fnmatch import fnmatch
 from typing import Any, Dict, List, Literal, Optional, Set, TypeVar
 
-from iam_ape.consts import CONDITIONS_NEGATIONS
+from iam_ape.consts import CONDITIONS_NEGATIONS, PolicyElement
+from iam_ape.exceptions import MalformedPolicyDocumentException, PolicyNotFoundException
 from iam_ape.helper_classes import HashableDict, HashableList
 from iam_ape.helper_types import AwsPolicyType
 
@@ -20,9 +21,9 @@ def as_list(element: Optional[Any]) -> List[Any]:
 
 
 def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
-    def verify_type(subject: Any, subject_type: Any, err_msg: str) -> None:
+    def verify_type(subject: Any, subject_type: Any) -> None:
         if not isinstance(subject, subject_type):
-            raise TypeError(err_msg)
+            raise MalformedPolicyDocumentException(subject_type, type(subject).__name__)
 
     def normalize_dict(
         dict_to_norm: Dict[str, Any], fields: Optional[Set[str]] = None
@@ -47,23 +48,30 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
     }
 
     if not isinstance(policy, dict):
-        raise TypeError(f"Malformed policy. Expected dict, got: {type(policy)}")
+        raise MalformedPolicyDocumentException(dict, type(policy).__name__)
 
     for field in aws_policy_str_fields:
         verify_type(
             policy.get(field, ""),
             str,
-            err_msg=f"Malformed Policy, expected {field} of type str",
         )
 
     policy = normalize_dict(policy, aws_policy_list_fields)  # type: ignore
 
     for statement in policy["Statement"]:
         verify_type(
-            statement["Effect"],
+            statement[PolicyElement.EFFECT],
             str,
-            err_msg="Malformed Policy, expected statement Effect of type str",
         )
+        if not statement[PolicyElement.EFFECT] in ["Allow", "Deny"]:
+            if statement[PolicyElement.EFFECT].lower() == "deny":
+                statement[PolicyElement.EFFECT] = "Deny"
+            elif statement[PolicyElement.EFFECT].lower() == "allow":
+                statement[PolicyElement.EFFECT] = "Allow"
+            else:
+                raise MalformedPolicyDocumentException(
+                    "Allow or Deny", statement[PolicyElement.EFFECT]
+                )
 
         # Normalize list fields
         statement = normalize_dict(statement, aws_statement_list_fields)  # type: ignore
@@ -84,7 +92,6 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
             verify_type(
                 statement.get(field, {}),
                 dict,
-                err_msg=f"Malformed Policy, expected {field} of type dict",
             )
             statement[field] = normalize_dict(statement[field])  # type: ignore
 
@@ -99,14 +106,17 @@ def normalize_policy(policy: AwsPolicyType) -> AwsPolicyType:
         #   }
         # }
         verify_type(
-            statement.get("Condition", {}),
+            statement.get(PolicyElement.CONDITION, {}),
             dict,
-            err_msg="Malformed Policy, expected Condition of type dict",
         )
-        for condition_operator, condition_dict in statement.get("Condition", {}).items():  # type: ignore
+        for condition_operator, condition_dict in statement.get(PolicyElement.CONDITION, {}).items():  # type: ignore
             for condition_key, condition_value in condition_dict.items():
                 if not isinstance(condition_value, list):
-                    statement["Condition"][condition_operator][condition_key] = [condition_value]  # type: ignore
+                    statement[PolicyElement.CONDITION][condition_operator][  # type: ignore
+                        condition_key
+                    ] = [
+                        condition_value
+                    ]
 
         for action_key in aws_statement_action_keys:
             if action_list := statement.get(action_key):
@@ -199,7 +209,7 @@ def get_default_policy_for_managed_policy(
     for policy in managed_policy_obj.get("PolicyVersionList", []):
         if policy.get("IsDefaultVersion", False):
             return normalize_policy(policy["Document"])
-    raise ValueError(
+    raise PolicyNotFoundException(
         f"No default policy found for managed policy {managed_policy_obj['Arn']}"
     )
 

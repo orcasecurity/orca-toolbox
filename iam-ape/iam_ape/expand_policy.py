@@ -1,5 +1,7 @@
+import functools
 import json
 import logging
+import re
 import tarfile
 from collections import defaultdict
 from fnmatch import fnmatch
@@ -8,6 +10,7 @@ from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple
 from requests.structures import CaseInsensitiveDict
 
 from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
+from iam_ape.exceptions import UnknownServiceExepction
 from iam_ape.helper_classes import (
     Action,
     HashableDict,
@@ -19,6 +22,50 @@ from iam_ape.helper_functions import as_list, normalize_policy, wildcard_match
 from iam_ape.helper_types import AwsPolicyStatementType, AwsPolicyType
 
 logger = logging.getLogger("policy expander")
+WORDSPLIT_RE = re.compile(r"(?<=.)(?=[A-Z])")
+
+
+class FrozenSetSet:
+    pass
+
+
+@functools.lru_cache()
+def shorten_to_leading_word(actions: FrozenSet[str]) -> Dict[str, Set[str]]:
+    """
+    Shorten a list of actions to their leading word,
+    e.g. ['DescribeInstances', 'DescribeVolumes'] -> {'Describe': ['DescribeInstances', 'DescribeVolumes']}
+    :param actions: list of actions
+    :returns: dict of leading words to actions
+    """
+    action_mapping = defaultdict(set)
+    for action in actions:
+        action_words = WORDSPLIT_RE.split(action)
+        action_mapping[action_words[0]].add(action)
+    return action_mapping
+
+
+def minimize_actions(
+    service: str, actions: List[str], all_iam_actions: List[str]
+) -> List[str]:
+    """
+    Minimize a list of actions for a given service, by replacing a list of actions with a wildcard if possible.
+    :param service: service name
+    :param actions: list of actions
+    :return: a list of actions
+    """
+    if len(actions) == 1:
+        return [f"{service}:{actions[0]}"]
+    if len(actions) == len(all_iam_actions):
+        return [f"{service}:*"]
+    all_service_wildcards = shorten_to_leading_word(frozenset(all_iam_actions))
+    statements_wildcards = shorten_to_leading_word(frozenset(actions))
+    res = []
+    for wildcard, used_actions in statements_wildcards.items():
+        if len(used_actions) == len(all_service_wildcards[wildcard]):
+            res.append(f"{service}:{wildcard}*")
+        else:
+            res.extend([f"{service}:{action}" for action in used_actions])
+    return res
 
 
 def _append_action(
@@ -258,27 +305,26 @@ class PolicyExpander:
             for action in statement.get(PolicyElement.ACTION) or []:
                 service, action_key = action.split(":", maxsplit=1)
                 action_dict[service].append(action_key)
+            statement_actions = []
             for service, action_keys in action_dict.items():
-                try:
-                    if all(
-                        [
-                            action in action_keys
-                            for action in self.all_iam_actions[service]
-                        ]
-                    ):
-                        for action_key in action_keys:
-                            statement[PolicyElement.ACTION].remove(f"{service}:{action_key}")  # type: ignore
-                        statement[PolicyElement.ACTION].append(f"{service}:*")  # type: ignore
-                except KeyError as e:
-                    logger.exception(f"Unknown service: {service=}")
-                    raise e
+                if all_service_actions := self.all_iam_actions.get(service):
+                    statement_actions.extend(
+                        minimize_actions(
+                            service=service,
+                            actions=action_keys,
+                            all_iam_actions=all_service_actions,
+                        )
+                    )
+                else:
+                    raise UnknownServiceExepction(service)
             if all(
                 [
-                    action in as_list(statement[PolicyElement.ACTION])
+                    action in as_list(statement_actions)
                     for action in self._all_service_wildcards
                 ]
             ):
-                statement[PolicyElement.ACTION] = ["*"]
+                statement_actions = ["*"]
+            statement[PolicyElement.ACTION] = statement_actions
         return policy_statements
 
     def shrink_policy(self, allow_actions: Dict[str, Set[Action]]) -> AwsPolicyType:
