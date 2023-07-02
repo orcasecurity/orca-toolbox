@@ -4,11 +4,8 @@ from collections import defaultdict
 from dataclasses import replace
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
-from iam_ape.exceptions import (
-    EntityNotFoundException,
-    PolicyNotFoundException,
-)
 from iam_ape.consts import PolicyElement
+from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
 from iam_ape.expand_policy import PolicyExpander
 from iam_ape.helper_classes import (
     Action,

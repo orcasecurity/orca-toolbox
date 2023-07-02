@@ -9,13 +9,13 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import boto3
 from botocore.exceptions import ClientError, ProfileNotFound
 
+from iam_ape.aws_iam_actions.scrape_iam_actions import scrape_iam_actions
+from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.exceptions import (
     AwsAuthorizationException,
     IamApeException,
     InvalidArnException,
 )
-from iam_ape.aws_iam_actions.scrape_iam_actions import scrape_iam_actions
-from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.helper_classes import PolicyWithSource
 from iam_ape.helper_functions import deep_update
 from iam_ape.helper_types import AwsPolicyType, EntityType, FinalReportT

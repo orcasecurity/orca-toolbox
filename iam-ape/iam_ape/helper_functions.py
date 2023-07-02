@@ -2,11 +2,8 @@ import logging
 from fnmatch import fnmatch
 from typing import Any, Dict, List, Literal, Optional, Set, TypeVar
 
-from iam_ape.exceptions import (
-    MalformedPolicyDocumentException,
-    PolicyNotFoundException,
-)
 from iam_ape.consts import CONDITIONS_NEGATIONS, PolicyElement
+from iam_ape.exceptions import MalformedPolicyDocumentException, PolicyNotFoundException
 from iam_ape.helper_classes import HashableDict, HashableList
 from iam_ape.helper_types import AwsPolicyType
 
