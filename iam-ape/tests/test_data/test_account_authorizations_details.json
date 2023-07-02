@@ -221,8 +221,8 @@
                                 "Sid": "VisualEditor0",
                                 "Effect": "Allow",
                                 "Action": [
-                                    "s3:GetObject",
-                                    "s3:ListBucket"
+                                    "s3:Get*",
+                                    "s3:List*"
                                 ],
                                 "Resource": [
                                     "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1",
