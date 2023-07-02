@@ -44,7 +44,7 @@ expected_result = {
         },
         {
             "Effect": "Allow",
-            "Action": ["s3:Get*", "s3:List*"],
+            "Action": ["s3:Get*", "s3:List*", "s3:CreateBucket", "s3:CreateJob"],
             "Resource": [
                 "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1",
                 "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1/*",

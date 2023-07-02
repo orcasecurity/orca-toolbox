@@ -314,15 +314,6 @@ class PolicyExpander:
                             all_iam_actions=self.all_iam_actions[service],
                         )
                     )
-                    # if all(
-                    #     [
-                    #         action in action_keys
-                    #         for action in self.all_iam_actions[service]
-                    #     ]
-                    # ):
-                    #     for action_key in action_keys:
-                    #         statement[PolicyElement.ACTION].remove(f"{service}:{action_key}")  # type: ignore
-                    #     statement[PolicyElement.ACTION].append(f"{service}:*")  # type: ignore
                 except KeyError as e:
                     logger.exception(f"Unknown service: {service=}")
                     raise e
