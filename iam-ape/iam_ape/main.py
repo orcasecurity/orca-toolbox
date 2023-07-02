@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import boto3
 from botocore.exceptions import ClientError, ProfileNotFound
 
-from iam_ape.aws_iam_actions.exceptions import (
+from iam_ape.exceptions import (
     AwsAuthorizationException,
     IamApeException,
     InvalidArnException,

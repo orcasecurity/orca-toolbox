@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import replace
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
-from iam_ape.aws_iam_actions.exceptions import (
+from iam_ape.exceptions import (
     EntityNotFoundException,
     PolicyNotFoundException,
 )

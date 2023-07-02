@@ -2,7 +2,7 @@ import logging
 from fnmatch import fnmatch
 from typing import Any, Dict, List, Literal, Optional, Set, TypeVar
 
-from iam_ape.aws_iam_actions.exceptions import (
+from iam_ape.exceptions import (
     MalformedPolicyDocumentException,
     PolicyNotFoundException,
 )
