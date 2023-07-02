@@ -40,3 +40,10 @@ class AwsAuthorizationException(IamApeException):
     """Raised when an AWS authorization error occurs"""
 
     pass
+
+
+class UnknownServiceExepction(IamApeException):
+    """Raised when an unknown service is encountered"""
+
+    def __init__(self, service: str) -> None:
+        super().__init__(f"Unknown service: {service}")

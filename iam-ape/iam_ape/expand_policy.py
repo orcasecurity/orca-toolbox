@@ -10,6 +10,7 @@ from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple
 from requests.structures import CaseInsensitiveDict
 
 from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
+from iam_ape.exceptions import UnknownServiceExepction
 from iam_ape.helper_classes import (
     Action,
     HashableDict,
@@ -306,25 +307,24 @@ class PolicyExpander:
                 action_dict[service].append(action_key)
             statement_actions = []
             for service, action_keys in action_dict.items():
-                try:
+                if all_service_actions := self.all_iam_actions.get(service):
                     statement_actions.extend(
                         minimize_actions(
                             service=service,
                             actions=action_keys,
-                            all_iam_actions=self.all_iam_actions[service],
+                            all_iam_actions=all_service_actions,
                         )
                     )
-                except KeyError as e:
-                    logger.exception(f"Unknown service: {service=}")
-                    raise e
-                statement[PolicyElement.ACTION] = statement_actions
+                else:
+                    raise UnknownServiceExepction(service)
             if all(
                 [
-                    action in as_list(statement[PolicyElement.ACTION])
+                    action in as_list(statement_actions)
                     for action in self._all_service_wildcards
                 ]
             ):
-                statement[PolicyElement.ACTION] = ["*"]
+                statement_actions = ["*"]
+            statement[PolicyElement.ACTION] = statement_actions
         return policy_statements
 
     def shrink_policy(self, allow_actions: Dict[str, Set[Action]]) -> AwsPolicyType:
