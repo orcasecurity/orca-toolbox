@@ -28,6 +28,12 @@ logger = logging.getLogger("IAM-APE:evaluator")
 def should_deny(
     iam_action: Action, denied_actions: Dict[str, Set[Action]]
 ) -> Tuple[bool, Set[Action], Optional[str]]:
+    """
+    Check if an action is denied by a list of denied actions
+    :param iam_action:
+    :param denied_actions:
+    :return: denied, partially_denied_actions, source
+    """
     res = set()
     partially_denied = False
 
@@ -695,6 +701,7 @@ class EffectivePolicyEvaluator:
 
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
+        denied_permissions = direct_permissions.denied_permissions
         for boundary in (permission_boundary, self.scp_policy):
             if boundary.allowed_permissions or boundary.denied_permissions:
                 (
@@ -703,10 +710,10 @@ class EffectivePolicyEvaluator:
                 ) = apply_permission_boundary(final_permissions, boundary)
                 ineffective_permissions.update(more_ineffective_permissions)
 
-            denied_permissions = deep_update(
-                direct_permissions.denied_permissions,
-                boundary.denied_permissions,
-            )
+                denied_permissions = deep_update(
+                    denied_permissions,
+                    boundary.denied_permissions,
+                )
 
         return PermissionsContainer(
             allowed_permissions=final_permissions,
