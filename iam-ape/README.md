@@ -1,4 +1,6 @@
-![iam-ape](https://raw.githubusercontent.com/orcasecurity/orca-toolbox/main/iam-ape/iam-ape.png)
+<p align="center">
+    <img src="https://raw.githubusercontent.com/orcasecurity/orca-toolbox/main/iam-ape/iam-ape.png" width="350" height="350">
+</p>
 # **IAM APE** #
 ## IAM AWS Policy Evaluator ##
 

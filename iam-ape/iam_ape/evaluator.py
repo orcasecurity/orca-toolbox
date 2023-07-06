@@ -674,7 +674,6 @@ class EffectivePolicyEvaluator:
                 ),
             )
             permissions = self.policy_expander.expand_policies([policy])
-            permissions.allowed_permissions, _ = explicitly_deny(permissions)
 
         return permissions
 
