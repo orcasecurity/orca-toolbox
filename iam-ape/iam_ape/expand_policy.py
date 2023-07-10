@@ -53,10 +53,10 @@ def minimize_actions(
     :param actions: list of actions
     :return: a list of actions
     """
-    if len(actions) == 1:
-        return [f"{service}:{actions[0]}"]
     if len(actions) == len(all_iam_actions):
         return [f"{service}:*"]
+    if len(actions) == 1:
+        return [f"{service}:{actions[0]}"]
     all_service_wildcards = shorten_to_leading_word(frozenset(all_iam_actions))
     statements_wildcards = shorten_to_leading_word(frozenset(actions))
     res = []
