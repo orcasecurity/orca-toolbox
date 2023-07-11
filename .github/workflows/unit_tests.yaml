@@ -7,7 +7,7 @@ on:
       - synchronize
       - reopened
     paths:
-      - 'iam-ape/*'
+      - 'iam-ape/**'
   workflow_dispatch:
 
 
