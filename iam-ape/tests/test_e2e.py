@@ -2,8 +2,19 @@ import json
 import os
 
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
-from iam_ape.helper_classes import HashableDict, PolicyWithSource
-from iam_ape.helper_types import EntityType
+from iam_ape.helper_classes import HashableDict, HashableList, PolicyWithSource
+from iam_ape.helper_types import AwsPolicyType, EntityType
+
+admin_policy: AwsPolicyType = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": ["*"],
+            "Resource": ["*"],
+        }
+    ],
+}
 
 expected_result = {
     "Statement": [
@@ -129,3 +140,17 @@ def test_e2e() -> None:
             for y in v.values()
         ]
     ) == len(res.ineffective_permissions)
+
+
+def test_expand_minimize() -> None:
+    evaluator = EffectivePolicyEvaluator(AuthorizationDetails({}), None)
+    expanded_policy = evaluator.policy_expander.expand_policies(
+        [PolicyWithSource(source="test", policy=admin_policy)]
+    )
+    minimized_policy = evaluator.policy_expander.shrink_policy(
+        expanded_policy.allowed_permissions
+    )
+
+    assert hash(HashableList(minimized_policy["Statement"])) == hash(
+        HashableList(admin_policy["Statement"])
+    )
