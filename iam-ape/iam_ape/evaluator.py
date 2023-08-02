@@ -576,34 +576,27 @@ class EffectivePolicyEvaluator:
                 for action_tuple in action_tuple_set:
                     service = action_to_service(action_tuple.action)
                     resource = action_tuple.resource or "*"
+                    curr_context = res[section][service][resource]  # type: ignore[literal-required]
                     if action_tuple.not_resource:
-                        if res[section][service][resource].get("NotResource"):  # type: ignore[literal-required]
-                            res[section][service][resource]["NotResource"].add(  # type: ignore[literal-required]
-                                action_tuple.not_resource
-                            )
+                        if curr_context.get("NotResource"):
+                            curr_context["NotResource"].add(action_tuple.not_resource)
                         else:
-                            res[section][service][resource]["NotResource"] = {  # type: ignore[literal-required]
-                                action_tuple.not_resource
-                            }
+                            curr_context["NotResource"] = {action_tuple.not_resource}
                     access_level = self.policy_expander.get_action_access_level(
                         action_tuple.action
                     )
                     if cond := merge_condition(
-                        res[section][service][resource][access_level]  # type: ignore[literal-required]
+                        curr_context[access_level]
                         .get(action_tuple.action, {})
                         .get("Condition", {}),
                         action_tuple.condition,
                         negate=False,
                         hashable=False,
                     ):
-                        res[section][service][resource][access_level][  # type: ignore[literal-required]
-                            action_tuple.action
-                        ][
+                        curr_context[access_level][action_tuple.action][
                             "Condition"
                         ] = cond
-                    res[section][service][resource][access_level][action_tuple.action][  # type: ignore
-                        "source"
-                    ].add(
+                    curr_context[access_level][action_tuple.action]["source"].add(
                         action_tuple.source
                     )
 

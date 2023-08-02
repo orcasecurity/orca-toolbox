@@ -243,6 +243,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     adv_usage.add_argument(
         "-v", "--verbose", help="Set verbosity level to DEBUG", action="store_true"
     )
+    adv_usage.add_argument(
+        "-q", "--quiet", help="Set verbosity level to WARNING", action="store_true"
+    )
 
     misc_usage.add_argument(
         "-u",
@@ -258,13 +261,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> int:
     initialize_logger()
     logger = logging.getLogger("IAM-APE")
-    print_banner()
 
     arg_parser = build_arg_parser()
     arguments = arg_parser.parse_args()
 
+    if not arguments.quiet:
+        print_banner()
+
     if arguments.verbose:
         logging.root.setLevel(logging.DEBUG)
+    elif arguments.quiet:
+        logging.root.setLevel(logging.WARNING)
 
     if not (arguments.arn or arguments.update):
         arg_parser.print_help()
@@ -312,7 +319,7 @@ def main() -> int:
 
     if arguments.output == "stdout":
         logger.info(f"Effective permissions policy for {arguments.arn}\n")
-        logger.info(json.dumps(out, indent=2))
+        print(json.dumps(out, indent=2))
     else:
         with open(arguments.output, "w") as f:
             json.dump(out, f, indent=2)
