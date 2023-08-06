@@ -224,7 +224,12 @@ def deep_update(
                 if isinstance(updated_mapping[k], dict) and isinstance(v, dict):
                     updated_mapping[k] = deep_update(updated_mapping[k], v)
                 elif isinstance(updated_mapping[k], list) and isinstance(v, list):
-                    updated_mapping[k] = list(set(updated_mapping[k] + v))
+                    updated_mapping[k] = list(updated_mapping[k] + v)
+                    # Attempt to remove duplicates
+                    try:
+                        updated_mapping[k] = list(set(updated_mapping[k]))
+                    except TypeError:
+                        pass
             else:
                 updated_mapping[k] = v
     return updated_mapping
