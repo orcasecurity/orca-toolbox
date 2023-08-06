@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="https://raw.githubusercontent.com/orcasecurity/orca-toolbox/main/iam-ape/iam-ape.png" width="350" height="350">
+    <img src="https://raw.githubusercontent.com/orcasecurity/orca-toolbox/main/iam-ape/iam-ape.png" width="680" height="350">
 </p>
 
 # **IAM APE** #
