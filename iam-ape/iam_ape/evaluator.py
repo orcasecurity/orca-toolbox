@@ -628,7 +628,8 @@ class EffectivePolicyEvaluator:
     ) -> List[PolicyWithSource]:
         inline_policies = [
             PolicyWithSource(
-                "inline policy", normalize_policy(policy["PolicyDocument"])
+                policy.get("PolicyName", "inline policy"),
+                normalize_policy(policy["PolicyDocument"]),
             )
             for policy in entity_obj.get(f"{entity_type.value}PolicyList", [])
         ]
