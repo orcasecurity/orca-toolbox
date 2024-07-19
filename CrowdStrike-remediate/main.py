@@ -61,7 +61,9 @@ def detach_volumes(ec2_client, instance_id, dry_run=False):
 # Function to attach volume to the current instance
 def attach_volume(ec2_client, instance_id, volume_id, device, dry_run=False):
     try:
-        ec2_client.attach_volume(InstanceId=instance_id, VolumeId=volume_id, Device=device, DryRun=dry_run)
+        ec2_client.attach_volume(
+            InstanceId=instance_id, VolumeId=volume_id, Device=device, DryRun=dry_run
+        )
         waiter = ec2_client.get_waiter("volume_in_use")
         waiter.wait(VolumeIds=[volume_id])
     except Exception as e:
@@ -82,19 +84,14 @@ def detach_volume(ec2_client, volume_id, dry_run=False):
 
 # Function to remove the file
 def remove_crowdstrike_file(mount_point):
-    file_pattern = (
-        f"{mount_point}/Windows/System32/drivers/CrowdStrike/C-00000291*.sys"
-    )
+    file_pattern = f"{mount_point}/Windows/System32/drivers/CrowdStrike/C-00000291*.sys"
     for file in glob.glob(file_pattern):
         os.remove(file)
 
 
 # Function to get the device name
 def get_device_name():
-    res = (
-        subprocess.run(["fdisk -l"], capture_output=True, shell=True)
-        .stdout.decode()
-    )
+    res = subprocess.run(["fdisk -l"], capture_output=True, shell=True).stdout.decode()
     for line in res.splitlines():
         if "NTFS" in line:
             device_name = line.split(" ")[0]
@@ -139,9 +136,7 @@ def main() -> None:
         .strip()
     )[:-1]
     self_instance_id = (
-        subprocess.run(
-            "ec2metadata --instance-id", capture_output=True, shell=True
-        )
+        subprocess.run("ec2metadata --instance-id", capture_output=True, shell=True)
         .stdout.decode()
         .strip()
     )
@@ -154,12 +149,16 @@ def main() -> None:
         logger.info(f"Remediating instance {instance_id}")
 
         try:
-            stop_instance(ec2_client=ec2_client, instance_id=instance_id, dry_run=dry_run)
+            stop_instance(
+                ec2_client=ec2_client, instance_id=instance_id, dry_run=dry_run
+            )
         except Exception as e:
             logger.error(f"Failed to stop instance {instance_id}: {e}")
             continue
 
-        for volume_id, device in detach_volumes(ec2_client=ec2_client, instance_id=instance_id, dry_run=dry_run):
+        for volume_id, device in detach_volumes(
+            ec2_client=ec2_client, instance_id=instance_id, dry_run=dry_run
+        ):
             try:
                 attach_volume(
                     ec2_client=ec2_client,
@@ -171,7 +170,9 @@ def main() -> None:
             except Exception as e:
                 if "DryRunOperation" not in str(e):
                     logger.error(f"Failed to attach volume {volume_id}: {e}")
-                    attach_volume(ec2_client, instance_id, volume_id, device, dry_run=dry_run)
+                    attach_volume(
+                        ec2_client, instance_id, volume_id, device, dry_run=dry_run
+                    )
                     continue
 
             try:
@@ -182,13 +183,17 @@ def main() -> None:
                         break
                     time.sleep(2)
                 if not dry_run:
-                    subprocess.run(["mount", device_name, mount_point], capture_output=True)
+                    subprocess.run(
+                        ["mount", device_name, mount_point], capture_output=True
+                    )
                     remove_crowdstrike_file(mount_point)
                     subprocess.run(["umount", mount_point], capture_output=True)
 
             finally:
                 detach_volume(ec2_client, volume_id, dry_run=dry_run)
-                attach_volume(ec2_client, instance_id, volume_id, device, dry_run=dry_run)
+                attach_volume(
+                    ec2_client, instance_id, volume_id, device, dry_run=dry_run
+                )
 
         start_instance(ec2_client, instance_id, dry_run=dry_run)
 
