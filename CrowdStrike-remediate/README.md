@@ -12,8 +12,6 @@ This tool is designed to help you quickly identify and remediate the CrowdStrike
   * `ec2:DescribeVolumes`
   * `ec2:AttachVolume`
   * `ec2:DetachVolume`
-* `boto3` Python package installed on the instance
-  * you can install this package using `pip3 install boto3`
 * `ntfs-3g` and `ec2metadata` packages installed on the instance
   * you can install these packages using `sudo apt-get install ntfs-3g ec2metadata`
 * (Optional) `poetry` Python package installed on the instance
