@@ -1,11 +1,11 @@
-# Orca Security Tool for Remediating CrowdStrike 2024-07-19 Incident #
+# Orca Security Tool for Remediating CrowdStrike 19-07-2024 Incident #
 
-This tool is designed to help you quickly identify and remediate the CrowdStrike 2024-07-19 incident in your AWS account.
+This tool is designed to help you quickly identify and remediate the CrowdStrike 19-07-2024 incident in your AWS account.
 
 ## Pre-requisites ##
 * An AWS EC2 instance running Linux OS with Python 3.11 or higher
   * We recommend creating a new instance running the latest official Ubuntu image
-  * **The instance must be in the same availablitity zone as the affected instances**
+  * **The instance must be in the same availability zone as the affected instances**
 * An AWS IAM role, attached to the instance, with the following permissions:
   * `ec2:StartInstances`
   * `ec2:StopInstances`
