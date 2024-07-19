@@ -1,3 +1,12 @@
+###########################################################################################################
+#                    CrowdStrike Outage Remediation Script by Orca Security                               #
+# Copyright 2024 Orca Security, Ltd.                                                                      #
+# Always ensure you have proper backups and permissions in place before running the script.               #
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.                     #
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY. #
+###########################################################################################################
+
+
 import argparse
 import glob
 import logging
