@@ -1,8 +1,8 @@
 [tool.poetry]
 name = "orca-cs-remediate"
-version = "0.1.0"
+version = "1.0.0"
 description = ""
-authors = ["Tohar <tohar@orca.security>"]
+authors = ["Tohar Braun, Orca Security <tohar@orca.security>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
