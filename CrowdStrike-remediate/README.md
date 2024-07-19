@@ -1,4 +1,4 @@
-# Orca Security Tool for Remediating CrowdStrike 19-07-2024 Incident #
+# Orca Security Tool for Remediating CrowdStrike 2024-09-17 Incident #
 
 This tool is designed to help you quickly identify and remediate the CrowdStrike 19-07-2024 incident in your AWS account.
 
@@ -19,7 +19,7 @@ This tool is designed to help you quickly identify and remediate the CrowdStrike
   * This is only required if you want to use the virtual environment created by poetry
 
 ## Usage ##
-* Identify the instance(s) affected by the CrowdStrike 19-07-2024 incident 
+* Identify the instance(s) affected by the CrowdStrike 2024-09-17 incident 
 * Clone this repository to the instance 
 * Change directory to the repository root
 * (Recommended) Run `poetry install` to install the required Python dependencies in a virtual environment,   
