@@ -3,6 +3,7 @@ name = "orca-cs-remediate"
 version = "1.0.0"
 description = ""
 authors = ["Tohar Braun, Orca Security <tohar@orca.security>"]
+license = "MIT"
 readme = "README.md"
 
 [tool.poetry.dependencies]
