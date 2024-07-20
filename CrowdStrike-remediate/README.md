@@ -35,17 +35,26 @@ This tool is designed to help you quickly identify and remediate the CrowdStrike
     ```
 
 1. (Recommended) Run `poetry install` to install the required Python dependencies in a virtual environment,
-**OR**
 
-* Install the dependencies manually using `pip3 install -r requirements.txt`
+    **OR**
 
-#### if you are using poetry ####
+    Install the dependencies manually using `pip3 install -r requirements.txt`
 
-* Run `poetry run python main.py --instance-ids <instance_id>,<instance_id>,...` to start the tool
+### If you are using poetry ###
 
-#### if you are not using poetry ####
+* Run the following command to start the tool
 
-* Run `python3 main.py --instance-ids <instance_id>,<instance_id>,...` to start the tool
+    ```bash
+    poetry run python main.py --instance-ids <instance_id>,<instance_id>,...
+    ```
+
+### If you are *not* using poetry ###
+
+* Run the following command to start the tool
+
+    ```bash
+    python3 main.py --instance-ids <instance_id>,<instance_id>,...
+    ```
 
 ## Disclaimer ##
 
