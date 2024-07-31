@@ -1,0 +1,30 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: orca-toolbox
+  description: Repository for orca-toolbox code.
+  labels:
+    orca.security/is-production: "false"
+    orca.security/repo-is-fork: "false"
+    orca.security/repo-visibility: public
+  annotations:
+    github.com/project-slug: orcasecurity/orca-toolbox
+    github.com/team-slug: orcasecurity/threat-research-team
+    orca.security/jira-project-key: TRT
+    orca.security/jira-project-name: Threat Research Team
+    orca.security/repo-created-at: "2021-12-08T15:06:04Z"
+    orca.security/repo-default-branch: main
+    orca.security/repo-main-language: Python
+  links:
+    - url: https://github.com/orcasecurity/orca-toolbox
+      title: Source Code
+      icon: github
+      type: url
+    - url: https://orcasecurity.atlassian.net/jira/software/c/projects/TRT/boards/212
+      title: Jira
+      icon: grading
+      type: url
+spec:
+  type: repository
+  lifecycle: production
+  owner: threat-research-team

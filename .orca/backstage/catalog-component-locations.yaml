@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: catalog-locations-orca-toolbox
+  labels:
+    repository: orca-toolbox
+  annotations:
+    github.com/project-slug: orcasecurity/orca-toolbox
+spec:
+  presence: optional
+  targets: []
