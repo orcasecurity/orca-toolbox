@@ -14,7 +14,7 @@ on:
 jobs:
   code-static-typing-and-linter:
     name: Static Typing and Linter
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.8.16", "3.9", "3.10", "3.11"]
