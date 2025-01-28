@@ -88,4 +88,3 @@ def scrape_iam_actions() -> int:
 
 if __name__ == "__main__":
     exit(scrape_iam_actions())
-
