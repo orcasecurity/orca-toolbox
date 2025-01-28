@@ -33,7 +33,7 @@ def scrape_iam_actions() -> int:
     for link in tqdm.tqdm(all_links, ncols=70):
         try:
             soup = get_soup(base_url + link[2:])
-            # Avoids 'NoneType' object has no attribute 'string' (example: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awsiot1-click.html)
+            # Avoids 'NoneType' object has no attribute 'string'
             if soup.find("code") is None:
                 continue
             service_prefix = soup.find("code").string
