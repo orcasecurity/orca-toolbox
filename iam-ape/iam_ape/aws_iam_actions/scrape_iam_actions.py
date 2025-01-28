@@ -33,6 +33,9 @@ def scrape_iam_actions() -> int:
     for link in tqdm.tqdm(all_links, ncols=70):
         try:
             soup = get_soup(base_url + link[2:])
+            # Avoids 'NoneType' object has no attribute 'string' (example: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awsiot1-click.html)
+            if soup.find("code") is None:
+                continue
             service_prefix = soup.find("code").string
             tables = soup.find_all("div", class_="table-contents")
             for table in tables:
@@ -68,7 +71,7 @@ def scrape_iam_actions() -> int:
 
         except AttributeError as e:
             logger.error(f"Error occurred while processing {link} - {e}")
-            raise e
+            continue
 
     logger.info("Done!")
 
@@ -85,3 +88,4 @@ def scrape_iam_actions() -> int:
 
 if __name__ == "__main__":
     exit(scrape_iam_actions())
+
