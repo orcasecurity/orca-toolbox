@@ -448,6 +448,5 @@ class PolicyExpander:
             policy_res["Statement"] = [admin_statement]
         else:
             policy_res["Statement"] = list(final_statements.values())
-        print("Before normalize_policy:", policy_res)
 
         return normalize_policy(policy_res)
