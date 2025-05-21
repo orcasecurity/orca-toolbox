@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Set
 
 import boto3
 from botocore.exceptions import ClientError, ProfileNotFound
@@ -16,7 +16,8 @@ from iam_ape.exceptions import (
     IamApeException,
     InvalidArnException,
 )
-from iam_ape.helper_classes import PolicyWithSource
+from iam_ape.expand_policy import PolicyExpander
+from iam_ape.helper_classes import PolicyWithSource, Action
 from iam_ape.helper_functions import deep_update
 from iam_ape.helper_types import AwsPolicyType, EntityType, FinalReportT
 
@@ -258,76 +259,97 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return arg_parser
 
 
-def main() -> int:
-    initialize_logger()
-    logger = logging.getLogger("IAM-APE")
+# def main() -> int:
+#     initialize_logger()
+#     logger = logging.getLogger("IAM-APE")
+#
+#     arg_parser = build_arg_parser()
+#     arguments = arg_parser.parse_args()
+#
+#     if not arguments.quiet:
+#         print_banner()
+#
+#     if arguments.verbose:
+#         logging.root.setLevel(logging.DEBUG)
+#     elif arguments.quiet:
+#         logging.root.setLevel(logging.WARNING)
+#
+#     if not (arguments.arn or arguments.update):
+#         arg_parser.print_help()
+#         return 0
+#
+#     if arguments.update:
+#         scrape_iam_actions()
+#         if not arguments.arn:
+#             return 0
+#
+#     try:
+#         entity_type, entity_account = validate_arn(arguments.arn)
+#     except InvalidArnException as e:
+#         logger.error(e)
+#         return -1
+#
+#     try:
+#         auth_details = get_auth_details(arguments.input, arguments.profile)
+#     except (AwsAuthorizationException, ProfileNotFound) as e:
+#         logger.error(e)
+#         return -1
+#
+#     scp_policies = None
+#     if arguments.input is None or arguments.scp_policy is not None:
+#         scp_policies = get_scp_policies(
+#             arguments.scp_policy, arguments.profile, entity_account
+#         )
+#
+#     logger.info("Evaluating effective permissions")
+#     calculator = EffectivePolicyEvaluator(
+#         authorization_details=auth_details, scp_policies=scp_policies
+#     )
+#
+#     try:
+#         res = calculator.evaluate(arn=arguments.arn, entity_type=entity_type)
+#     except IamApeException as e:
+#         logger.error(e)
+#         return -1
+#     out: Union[AwsPolicyType, FinalReportT]
+#     if arguments.format == "clean":
+#         out = calculator.policy_expander.shrink_policy(res.allowed_permissions)
+#     else:
+#         out = calculator.create_json_report(res)
+#
+#     if arguments.output == "stdout":
+#         logger.info(f"Effective permissions policy for {arguments.arn}\n")
+#         print(json.dumps(out, indent=2))
+#     else:
+#         with open(arguments.output, "w") as f:
+#             json.dump(out, f, indent=2)
+#         logger.info(
+#             f"Wrote effective permissions for {arguments.arn} to {arguments.output}"
+#         )
+#
+#     return 0
+def main():
+    with open("allowed_permissions_debug.json") as f:
+        raw_data = json.load(f)
 
-    arg_parser = build_arg_parser()
-    arguments = arg_parser.parse_args()
-
-    if not arguments.quiet:
-        print_banner()
-
-    if arguments.verbose:
-        logging.root.setLevel(logging.DEBUG)
-    elif arguments.quiet:
-        logging.root.setLevel(logging.WARNING)
-
-    if not (arguments.arn or arguments.update):
-        arg_parser.print_help()
-        return 0
-
-    if arguments.update:
-        scrape_iam_actions()
-        if not arguments.arn:
-            return 0
-
-    try:
-        entity_type, entity_account = validate_arn(arguments.arn)
-    except InvalidArnException as e:
-        logger.error(e)
-        return -1
-
-    try:
-        auth_details = get_auth_details(arguments.input, arguments.profile)
-    except (AwsAuthorizationException, ProfileNotFound) as e:
-        logger.error(e)
-        return -1
-
-    scp_policies = None
-    if arguments.input is None or arguments.scp_policy is not None:
-        scp_policies = get_scp_policies(
-            arguments.scp_policy, arguments.profile, entity_account
-        )
-
-    logger.info("Evaluating effective permissions")
-    calculator = EffectivePolicyEvaluator(
-        authorization_details=auth_details, scp_policies=scp_policies
-    )
-
-    try:
-        res = calculator.evaluate(arn=arguments.arn, entity_type=entity_type)
-    except IamApeException as e:
-        logger.error(e)
-        return -1
-
-    out: Union[AwsPolicyType, FinalReportT]
-    if arguments.format == "clean":
-        out = calculator.policy_expander.shrink_policy(res.allowed_permissions)
-    else:
-        out = calculator.create_json_report(res)
-
-    if arguments.output == "stdout":
-        logger.info(f"Effective permissions policy for {arguments.arn}\n")
-        print(json.dumps(out, indent=2))
-    else:
-        with open(arguments.output, "w") as f:
-            json.dump(out, f, indent=2)
-        logger.info(
-            f"Wrote effective permissions for {arguments.arn} to {arguments.output}"
-        )
-
-    return 0
+    # Reconstruct allowed_permissions with Action objects
+    allowed_permissions: Dict[str, Set[Action]] = {
+        key: {
+            Action(
+                action=a["action"],
+                resource=a.get("resource"),
+                not_resource=a.get("not_resource"),
+                condition=a.get("condition"),
+                source=a["source"],
+            )
+            for a in actions
+        }
+        for key, actions in raw_data.items()
+    }
+    policy_expander = PolicyExpander()
+    shrunk_policy=policy_expander.shrink_policy(allowed_permissions)
+    print("~~" * 20)
+    print(json.dumps(shrunk_policy, indent=2))
 
 
 if __name__ == "__main__":
