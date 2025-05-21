@@ -349,7 +349,7 @@ class PolicyExpander:
                 merged_actions.add(actions_list[0])
             else:
                 # Multiple actions with same source/action/resource - merge their conditions
-                merged_condition = {}
+                merged_condition: Dict[str, Any] = {}
                 for action in actions_list:
                     if action.condition:
                         for operator, operator_conditions in action.condition.items():
@@ -385,7 +385,8 @@ class PolicyExpander:
         for resource_notresource, condition_actions in by_resource_notresource.items():
             resource, notresource = resource_notresource
             for condition, actions_set in condition_actions.items():
-                key = frozenset(actions_set), condition, notresource
+                key: Tuple[FrozenSet[str], Optional[HashableDict], Optional[str]] = (
+                frozenset(actions_set), condition, notresource)
                 if resource:
                     by_action_condition_notresource[key].add(resource)
                 elif not by_action_condition_notresource.get(key):
