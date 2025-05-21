@@ -339,7 +339,12 @@ class PolicyExpander:
         ] = defaultdict(list)
 
         for action_tuple in squashed_policies:
-            source_key = (action_tuple.source, action_tuple.action, action_tuple.resource, action_tuple.not_resource)
+            source_key = (
+                action_tuple.source,
+                action_tuple.action,
+                action_tuple.resource,
+                action_tuple.not_resource,
+            )
             actions_by_source_action_resource[source_key].append(action_tuple)
 
         # Merge conditions for actions from the same source
@@ -354,8 +359,12 @@ class PolicyExpander:
                     if action.condition:
                         for operator, operator_conditions in action.condition.items():
                             if operator in merged_condition:
-                                if isinstance(merged_condition[operator], dict) and isinstance(operator_conditions, dict):
-                                    merged_condition[operator].update(operator_conditions)
+                                if isinstance(
+                                    merged_condition[operator], dict
+                                ) and isinstance(operator_conditions, dict):
+                                    merged_condition[operator].update(
+                                        operator_conditions
+                                    )
                             else:
                                 merged_condition[operator] = operator_conditions
 
@@ -365,7 +374,7 @@ class PolicyExpander:
                     resource=actions_list[0].resource,
                     not_resource=actions_list[0].not_resource,
                     condition=merged_condition if merged_condition else None,
-                    source=actions_list[0].source
+                    source=actions_list[0].source,
                 )
                 merged_actions.add(merged_action)
 
@@ -386,7 +395,10 @@ class PolicyExpander:
             resource, notresource = resource_notresource
             for condition, actions_set in condition_actions.items():
                 key: Tuple[FrozenSet[str], Optional[HashableDict], Optional[str]] = (
-                frozenset(actions_set), condition, notresource)
+                    frozenset(actions_set),
+                    condition,
+                    notresource,
+                )
                 if resource:
                     by_action_condition_notresource[key].add(resource)
                 elif not by_action_condition_notresource.get(key):
