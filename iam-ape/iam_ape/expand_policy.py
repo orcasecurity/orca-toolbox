@@ -339,8 +339,8 @@ class PolicyExpander:
         ] = defaultdict(list)
 
         for action_tuple in squashed_policies:
-            key = (action_tuple.source, action_tuple.action, action_tuple.resource, action_tuple.not_resource)
-            actions_by_source_action_resource[key].append(action_tuple)
+            source_key = (action_tuple.source, action_tuple.action, action_tuple.resource, action_tuple.not_resource)
+            actions_by_source_action_resource[source_key].append(action_tuple)
 
         # Merge conditions for actions from the same source
         merged_actions: Set[Action] = set()
