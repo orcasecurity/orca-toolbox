@@ -333,11 +333,56 @@ class PolicyExpander:
         for allow_action_set in allow_actions.values():
             squashed_policies.update(allow_action_set)
 
+        # Arrange by source, action, resource, and not_resource to detect split conditions
+        actions_by_source_action_resource: Dict[
+            Tuple[str, str, Optional[str], Optional[str]], List[Action]
+        ] = defaultdict(list)
+
+        for action_tuple in squashed_policies:
+            source_key = (
+                action_tuple.source,
+                action_tuple.action,
+                action_tuple.resource,
+                action_tuple.not_resource,
+            )
+            actions_by_source_action_resource[source_key].append(action_tuple)
+
+        # Merge conditions for actions from the same source
+        merged_actions: Set[Action] = set()
+        for actions_list in actions_by_source_action_resource.values():
+            if len(actions_list) == 1:
+                merged_actions.add(actions_list[0])
+            else:
+                # Multiple actions with same source/action/resource - merge their conditions
+                merged_condition: Dict[str, Any] = {}
+                for action in actions_list:
+                    if action.condition:
+                        for operator, operator_conditions in action.condition.items():
+                            if operator in merged_condition:
+                                if isinstance(
+                                    merged_condition[operator], dict
+                                ) and isinstance(operator_conditions, dict):
+                                    merged_condition[operator].update(
+                                        operator_conditions
+                                    )
+                            else:
+                                merged_condition[operator] = operator_conditions
+
+                # Create a new merged action
+                merged_action = Action(
+                    action=actions_list[0].action,
+                    resource=actions_list[0].resource,
+                    not_resource=actions_list[0].not_resource,
+                    condition=merged_condition if merged_condition else None,
+                    source=actions_list[0].source,
+                )
+                merged_actions.add(merged_action)
+
         # Arrange by Resource/NotResource
         by_resource_notresource: Dict[
             Tuple[Optional[str], Optional[str]], Dict[Optional[HashableDict], Set[str]]
         ] = defaultdict(lambda: defaultdict(set))
-        for action_tuple in squashed_policies:
+        for action_tuple in merged_actions:
             by_resource_notresource[(action_tuple.resource, action_tuple.not_resource)][
                 HashableDict.recursively(action_tuple.condition)
             ].add(action_tuple.action)
@@ -349,7 +394,11 @@ class PolicyExpander:
         for resource_notresource, condition_actions in by_resource_notresource.items():
             resource, notresource = resource_notresource
             for condition, actions_set in condition_actions.items():
-                key = frozenset(actions_set), condition, notresource
+                key: Tuple[FrozenSet[str], Optional[HashableDict], Optional[str]] = (
+                    frozenset(actions_set),
+                    condition,
+                    notresource,
+                )
                 if resource:
                     by_action_condition_notresource[key].add(resource)
                 elif not by_action_condition_notresource.get(key):
