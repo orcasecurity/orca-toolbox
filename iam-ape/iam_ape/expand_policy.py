@@ -187,6 +187,9 @@ class PolicyExpander:
             for i, statement in enumerate(policy["Statement"]):
                 sid = "{}/{}".format(source, statement.get("Sid", i))
                 if actions := statement.get(PolicyElement.ACTION):
+                    # If actions is a string, convert it to a list containing that string
+                    if isinstance(actions, str):
+                        actions = [actions]
                     for action in actions:
                         expanded_action = self.expand_action(
                             Action(
