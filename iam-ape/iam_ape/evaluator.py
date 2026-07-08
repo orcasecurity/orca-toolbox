@@ -24,20 +24,70 @@ from iam_ape.helper_types import EntityType, FinalReportT
 
 logger = logging.getLogger("IAM-APE:evaluator")
 
+_PRINCIPAL_ARN_KEY = "aws:principalarn"
+_ARN_LIKE_OPERATORS = {"ArnLike", "StringLike"}
+_ARN_EQUALS_OPERATORS = {"ArnEquals", "StringEquals"}
+_ARN_NOTLIKE_OPERATORS = {"ArnNotLike", "StringNotLike"}
+_ARN_NOTEQUALS_OPERATORS = {"ArnNotEquals", "StringNotEquals"}
+
+
+def resolve_principal_arn_condition(
+    condition: Optional[Dict[str, Any]], principal_arn: str
+) -> Optional[bool]:
+    """Resolve a Condition keyed only on aws:PrincipalARN against the evaluated
+    principal. Returns True (applies), False (doesn't), or None (can't resolve
+    statically -> caller keeps symbolic handling)."""
+    if not condition:
+        return None
+    result = True
+    for operator, key_values in condition.items():
+        if not isinstance(key_values, dict):
+            return None
+        for key, values in key_values.items():
+            if key.lower() != _PRINCIPAL_ARN_KEY:
+                return None
+            patterns = list(values) if isinstance(values, (list, tuple)) else [values]
+            if operator in _ARN_LIKE_OPERATORS:
+                satisfied = any(wildcard_match(principal_arn, p) for p in patterns)
+            elif operator in _ARN_EQUALS_OPERATORS:
+                satisfied = principal_arn in patterns
+            elif operator in _ARN_NOTLIKE_OPERATORS:
+                satisfied = not any(wildcard_match(principal_arn, p) for p in patterns)
+            elif operator in _ARN_NOTEQUALS_OPERATORS:
+                satisfied = principal_arn not in patterns
+            else:
+                return None
+            result = result and satisfied
+    return result
+
 
 def should_deny(
-    iam_action: Action, denied_actions: Dict[str, Set[Action]]
+    iam_action: Action,
+    denied_actions: Dict[str, Set[Action]],
+    principal_arn: Optional[str] = None,
 ) -> Tuple[bool, Set[Action], Optional[str]]:
     """
     Check if an action is denied by a list of denied actions
     :param iam_action:
     :param denied_actions:
+    :param principal_arn: enables resolving aws:PrincipalARN-only deny conditions
     :return: denied, partially_denied_actions, source
     """
     res = set()
     partially_denied = False
 
     for denied_action in denied_actions.get(iam_action.action, []):
+
+        # A provable aws:PrincipalARN deny becomes unconditional; a provably
+        # inapplicable one is skipped; anything else keeps its condition.
+        if principal_arn is not None and denied_action.condition:
+            applies = resolve_principal_arn_condition(
+                denied_action.condition, principal_arn
+            )
+            if applies is False:
+                continue
+            if applies is True:
+                denied_action = replace(denied_action, condition=None)
 
         if iam_action == denied_action:
             return True, set(), denied_action.source
@@ -84,9 +134,11 @@ def should_deny(
                     res.add(
                         Action(
                             action=iam_action.action,
-                            resource=None
-                            if iam_action.resource == PolicyElement.WILDCARD
-                            else iam_action.resource,
+                            resource=(
+                                None
+                                if iam_action.resource == PolicyElement.WILDCARD
+                                else iam_action.resource
+                            ),
                             not_resource=denied_action.resource,
                             condition=merge_condition(
                                 iam_action.condition, denied_action.condition
@@ -99,9 +151,11 @@ def should_deny(
                     res.add(
                         Action(
                             action=iam_action.action,
-                            resource=None
-                            if iam_action.resource == PolicyElement.WILDCARD
-                            else iam_action.resource,
+                            resource=(
+                                None
+                                if iam_action.resource == PolicyElement.WILDCARD
+                                else iam_action.resource
+                            ),
                             not_resource=denied_action.resource,
                             condition=merge_condition(
                                 iam_action.condition, denied_action.condition
@@ -227,13 +281,14 @@ def should_deny(
 
 def explicitly_deny(
     permissions: PermissionsContainer,
+    principal_arn: Optional[str] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     final_actions_dict: Dict[str, Set[Action]] = defaultdict(set)
     ineffective_permissions: Set[IneffectiveAction] = set()
     for action_key, action_values in permissions.allowed_permissions.items():
         for action_value in action_values:
             denied, new_action_values, denied_by = should_deny(
-                action_value, permissions.denied_permissions
+                action_value, permissions.denied_permissions, principal_arn
             )
             if not denied:
                 final_actions_dict[action_key].update(new_action_values)
@@ -255,6 +310,7 @@ def explicitly_deny(
 def apply_permission_boundary(
     allow_actions: Dict[str, Set[Action]],
     permission_boundary: PermissionsContainer,
+    principal_arn: Optional[str] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     def permit(at: Action, bt: Action) -> Action:
         return replace(
@@ -455,7 +511,8 @@ def apply_permission_boundary(
         PermissionsContainer(
             allowed_permissions=new_allow_actions,
             denied_permissions=permission_boundary.denied_permissions,
-        )
+        ),
+        principal_arn,
     )
     ineffective_permissions.update(denied_ineffective)
     return allowed, ineffective_permissions
@@ -692,7 +749,9 @@ class EffectivePolicyEvaluator:
         )
         permission_boundary = self.get_permission_boundary(entity_obj)
 
-        final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
+        final_permissions, ineffective_permissions = explicitly_deny(
+            direct_permissions, arn
+        )
 
         denied_permissions = direct_permissions.denied_permissions
         for boundary in (permission_boundary, self.scp_policy):
@@ -700,7 +759,7 @@ class EffectivePolicyEvaluator:
                 (
                     final_permissions,
                     more_ineffective_permissions,
-                ) = apply_permission_boundary(final_permissions, boundary)
+                ) = apply_permission_boundary(final_permissions, boundary, arn)
                 ineffective_permissions.update(more_ineffective_permissions)
 
                 denied_permissions = deep_update(
