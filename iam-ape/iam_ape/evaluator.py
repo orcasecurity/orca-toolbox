@@ -24,70 +24,139 @@ from iam_ape.helper_types import EntityType, FinalReportT
 
 logger = logging.getLogger("IAM-APE:evaluator")
 
-_PRINCIPAL_ARN_KEY = "aws:principalarn"
-_ARN_LIKE_OPERATORS = {"ArnLike", "StringLike"}
-_ARN_EQUALS_OPERATORS = {"ArnEquals", "StringEquals"}
-_ARN_NOTLIKE_OPERATORS = {"ArnNotLike", "StringNotLike"}
-_ARN_NOTEQUALS_OPERATORS = {"ArnNotEquals", "StringNotEquals"}
+_LIKE_OPERATORS = {"ArnLike", "StringLike"}
+_EQUALS_OPERATORS = {"ArnEquals", "StringEquals"}
+_NOTLIKE_OPERATORS = {"ArnNotLike", "StringNotLike"}
+_NOTEQUALS_OPERATORS = {"ArnNotEquals", "StringNotEquals"}
+_MODELED_OPERATORS = (
+    _LIKE_OPERATORS | _EQUALS_OPERATORS | _NOTLIKE_OPERATORS | _NOTEQUALS_OPERATORS
+)
+_PRINCIPAL_TAG_PREFIX = "aws:principaltag/"
+_UNKNOWN = object()
 
 
-def resolve_principal_arn_condition(
-    condition: Optional[Dict[str, Any]], principal_arn: str
+def build_principal_context(arn: str, entity: Dict[str, Any]) -> Dict[str, Any]:
+    """Principal facts known statically, used to resolve deny conditions."""
+    parts = arn.split(":")
+    return {
+        "aws:principalarn": arn,
+        "aws:principalaccount": parts[4] if len(parts) > 4 and parts[4] else None,
+        "tags": {t.get("Key"): t.get("Value") for t in entity.get("Tags", [])},
+    }
+
+
+def _principal_condition_value(context: Dict[str, Any], key: str) -> Any:
+    key_lower = key.lower()
+    if key_lower == "aws:principalarn":
+        return context["aws:principalarn"]
+    if key_lower == "aws:principalaccount":
+        return context["aws:principalaccount"] or _UNKNOWN
+    if key_lower.startswith(_PRINCIPAL_TAG_PREFIX):
+        return context["tags"].get(key.split("/", 1)[1], _UNKNOWN)
+    return _UNKNOWN
+
+
+def condition_is_principal_resolvable(condition: Dict[str, Any]) -> bool:
+    """True if every clause is a modeled operator over a principal fact we know."""
+    for operator, key_values in condition.items():
+        if operator not in _MODELED_OPERATORS or not isinstance(key_values, dict):
+            return False
+        for key in key_values:
+            key_lower = key.lower()
+            if key_lower in ("aws:principalarn", "aws:principalaccount"):
+                continue
+            if key_lower.startswith(_PRINCIPAL_TAG_PREFIX):
+                continue
+            return False
+    return True
+
+
+def resolve_principal_condition(
+    condition: Optional[Dict[str, Any]], context: Dict[str, Any]
 ) -> Optional[bool]:
-    """Resolve a Condition keyed only on aws:PrincipalARN against the evaluated
-    principal. Returns True (applies), False (doesn't), or None (can't resolve
-    statically -> caller keeps symbolic handling)."""
+    """Resolve a whole Condition against known principal facts (ARN, account, tags).
+    Returns True (applies), False (doesn't), or None if a clause can't be decided
+    statically (e.g. an absent tag) -> caller keeps symbolic handling."""
     if not condition:
         return None
     result = True
     for operator, key_values in condition.items():
-        if not isinstance(key_values, dict):
+        if operator not in _MODELED_OPERATORS or not isinstance(key_values, dict):
             return None
         for key, values in key_values.items():
-            if key.lower() != _PRINCIPAL_ARN_KEY:
+            value = _principal_condition_value(context, key)
+            if value is _UNKNOWN:
                 return None
             patterns = list(values) if isinstance(values, (list, tuple)) else [values]
-            if operator in _ARN_LIKE_OPERATORS:
-                satisfied = any(wildcard_match(principal_arn, p) for p in patterns)
-            elif operator in _ARN_EQUALS_OPERATORS:
-                satisfied = principal_arn in patterns
-            elif operator in _ARN_NOTLIKE_OPERATORS:
-                satisfied = not any(wildcard_match(principal_arn, p) for p in patterns)
-            elif operator in _ARN_NOTEQUALS_OPERATORS:
-                satisfied = principal_arn not in patterns
+            if operator in _LIKE_OPERATORS:
+                satisfied = any(wildcard_match(value, p) for p in patterns)
+            elif operator in _EQUALS_OPERATORS:
+                satisfied = value in patterns
+            elif operator in _NOTLIKE_OPERATORS:
+                satisfied = not any(wildcard_match(value, p) for p in patterns)
             else:
-                return None
+                satisfied = value not in patterns
             result = result and satisfied
     return result
 
 
+def _split_scp_statements(
+    scp_policies: List[PolicyWithSource],
+) -> Tuple[List[PolicyWithSource], List[Tuple[str, Any]]]:
+    """Partition SCPs into a static baseline (expanded once) and principal-
+    conditional Deny statements (resolved per-principal at evaluation time)."""
+    static: List[PolicyWithSource] = []
+    conditional: List[Tuple[str, Any]] = []
+    for policy in scp_policies:
+        statements = policy.policy.get("Statement", [])
+        if isinstance(statements, dict):
+            statements = [statements]
+        static_statements = []
+        for statement in statements:
+            condition = statement.get("Condition")
+            if (
+                statement.get("Effect") == "Deny"
+                and condition
+                and condition_is_principal_resolvable(condition)
+            ):
+                conditional.append((policy.source, statement))
+            else:
+                static_statements.append(statement)
+        if static_statements:
+            static.append(
+                PolicyWithSource(
+                    policy.source, {**policy.policy, "Statement": static_statements}
+                )
+            )
+    return static, conditional
+
+
+def _merge_containers(
+    base: PermissionsContainer, extra: PermissionsContainer
+) -> PermissionsContainer:
+    allowed: Dict[str, Set[Action]] = defaultdict(set)
+    denied: Dict[str, Set[Action]] = defaultdict(set)
+    for container in (base, extra):
+        for key, values in container.allowed_permissions.items():
+            allowed[key] |= set(values)
+        for key, values in container.denied_permissions.items():
+            denied[key] |= set(values)
+    return PermissionsContainer(allowed_permissions=allowed, denied_permissions=denied)
+
+
 def should_deny(
-    iam_action: Action,
-    denied_actions: Dict[str, Set[Action]],
-    principal_arn: Optional[str] = None,
+    iam_action: Action, denied_actions: Dict[str, Set[Action]]
 ) -> Tuple[bool, Set[Action], Optional[str]]:
     """
     Check if an action is denied by a list of denied actions
     :param iam_action:
     :param denied_actions:
-    :param principal_arn: enables resolving aws:PrincipalARN-only deny conditions
     :return: denied, partially_denied_actions, source
     """
     res = set()
     partially_denied = False
 
     for denied_action in denied_actions.get(iam_action.action, []):
-
-        # A provable aws:PrincipalARN deny becomes unconditional; a provably
-        # inapplicable one is skipped; anything else keeps its condition.
-        if principal_arn is not None and denied_action.condition:
-            applies = resolve_principal_arn_condition(
-                denied_action.condition, principal_arn
-            )
-            if applies is False:
-                continue
-            if applies is True:
-                denied_action = replace(denied_action, condition=None)
 
         if iam_action == denied_action:
             return True, set(), denied_action.source
@@ -281,14 +350,13 @@ def should_deny(
 
 def explicitly_deny(
     permissions: PermissionsContainer,
-    principal_arn: Optional[str] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     final_actions_dict: Dict[str, Set[Action]] = defaultdict(set)
     ineffective_permissions: Set[IneffectiveAction] = set()
     for action_key, action_values in permissions.allowed_permissions.items():
         for action_value in action_values:
             denied, new_action_values, denied_by = should_deny(
-                action_value, permissions.denied_permissions, principal_arn
+                action_value, permissions.denied_permissions
             )
             if not denied:
                 final_actions_dict[action_key].update(new_action_values)
@@ -310,7 +378,6 @@ def explicitly_deny(
 def apply_permission_boundary(
     allow_actions: Dict[str, Set[Action]],
     permission_boundary: PermissionsContainer,
-    principal_arn: Optional[str] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     def permit(at: Action, bt: Action) -> Action:
         return replace(
@@ -511,8 +578,7 @@ def apply_permission_boundary(
         PermissionsContainer(
             allowed_permissions=new_allow_actions,
             denied_permissions=permission_boundary.denied_permissions,
-        ),
-        principal_arn,
+        )
     )
     ineffective_permissions.update(denied_ineffective)
     return allowed, ineffective_permissions
@@ -547,10 +613,41 @@ class EffectivePolicyEvaluator:
     ) -> None:
         self.auth_details = authorization_details
         self.policy_expander = policy_expander or PolicyExpander()
+        static_scp, self._scp_principal_denies = _split_scp_statements(
+            scp_policies or []
+        )
         self.scp_policy = (
-            self.policy_expander.expand_policies(scp_policies)
-            if scp_policies
+            self.policy_expander.expand_policies(static_scp)
+            if static_scp
             else PermissionsContainer()
+        )
+
+    def _scp_for_principal(
+        self, principal_context: Dict[str, Any]
+    ) -> PermissionsContainer:
+        """SCP for one principal: the static baseline plus its principal-
+        conditional denies, resolved against the principal (applies -> enforced,
+        doesn't -> dropped, undecidable -> kept symbolic)."""
+        if not self._scp_principal_denies:
+            return self.scp_policy
+        resolved: List[PolicyWithSource] = []
+        for source, statement in self._scp_principal_denies:
+            applies = resolve_principal_condition(
+                statement.get("Condition"), principal_context
+            )
+            if applies is False:
+                continue
+            if applies is True:
+                statement = {k: v for k, v in statement.items() if k != "Condition"}
+            resolved.append(
+                PolicyWithSource(
+                    source, {"Version": "2012-10-17", "Statement": [statement]}
+                )
+            )
+        if not resolved:
+            return self.scp_policy
+        return _merge_containers(
+            self.scp_policy, self.policy_expander.expand_policies(resolved)
         )
 
     def create_json_report(
@@ -734,6 +831,7 @@ class EffectivePolicyEvaluator:
             logger.error(f"Error - couldn't find entity with ARN {arn}")
             raise EntityNotFoundException(arn)
 
+        scp_policy = self._scp_for_principal(build_principal_context(arn, entity_obj))
         direct_policies = self.get_direct_policies(entity_obj, entity_type)
         indirect_policies: List[PolicyWithSource] = []
         if entity_type == EntityType.user:
@@ -749,17 +847,15 @@ class EffectivePolicyEvaluator:
         )
         permission_boundary = self.get_permission_boundary(entity_obj)
 
-        final_permissions, ineffective_permissions = explicitly_deny(
-            direct_permissions, arn
-        )
+        final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
         denied_permissions = direct_permissions.denied_permissions
-        for boundary in (permission_boundary, self.scp_policy):
+        for boundary in (permission_boundary, scp_policy):
             if boundary.allowed_permissions or boundary.denied_permissions:
                 (
                     final_permissions,
                     more_ineffective_permissions,
-                ) = apply_permission_boundary(final_permissions, boundary, arn)
+                ) = apply_permission_boundary(final_permissions, boundary)
                 ineffective_permissions.update(more_ineffective_permissions)
 
                 denied_permissions = deep_update(
