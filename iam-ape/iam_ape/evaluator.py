@@ -31,6 +31,8 @@ _NOTEQUALS_OPERATORS = {"ArnNotEquals", "StringNotEquals"}
 _MODELED_OPERATORS = (
     _LIKE_OPERATORS | _EQUALS_OPERATORS | _NOTLIKE_OPERATORS | _NOTEQUALS_OPERATORS
 )
+_PRINCIPAL_ARN_KEY = "aws:principalarn"
+_PRINCIPAL_ACCOUNT_KEY = "aws:principalaccount"
 _PRINCIPAL_TAG_PREFIX = "aws:principaltag/"
 _UNKNOWN = object()
 
@@ -39,18 +41,18 @@ def build_principal_context(arn: str, entity: Dict[str, Any]) -> Dict[str, Any]:
     """Principal facts known statically, used to resolve deny conditions."""
     parts = arn.split(":")
     return {
-        "aws:principalarn": arn,
-        "aws:principalaccount": parts[4] if len(parts) > 4 and parts[4] else None,
+        _PRINCIPAL_ARN_KEY: arn,
+        _PRINCIPAL_ACCOUNT_KEY: parts[4] if len(parts) > 4 and parts[4] else None,
         "tags": {t.get("Key"): t.get("Value") for t in entity.get("Tags", [])},
     }
 
 
 def _principal_condition_value(context: Dict[str, Any], key: str) -> Any:
     key_lower = key.lower()
-    if key_lower == "aws:principalarn":
-        return context["aws:principalarn"]
-    if key_lower == "aws:principalaccount":
-        return context["aws:principalaccount"] or _UNKNOWN
+    if key_lower == _PRINCIPAL_ARN_KEY:
+        return context[_PRINCIPAL_ARN_KEY]
+    if key_lower == _PRINCIPAL_ACCOUNT_KEY:
+        return context[_PRINCIPAL_ACCOUNT_KEY] or _UNKNOWN
     if key_lower.startswith(_PRINCIPAL_TAG_PREFIX):
         return context["tags"].get(key.split("/", 1)[1], _UNKNOWN)
     return _UNKNOWN
@@ -63,12 +65,35 @@ def condition_is_principal_resolvable(condition: Dict[str, Any]) -> bool:
             return False
         for key in key_values:
             key_lower = key.lower()
-            if key_lower in ("aws:principalarn", "aws:principalaccount"):
+            if key_lower in (_PRINCIPAL_ARN_KEY, _PRINCIPAL_ACCOUNT_KEY):
                 continue
             if key_lower.startswith(_PRINCIPAL_TAG_PREFIX):
                 continue
             return False
     return True
+
+
+def _clause_satisfied(operator: str, value: str, patterns: List[str]) -> bool:
+    if operator in _LIKE_OPERATORS:
+        return any(wildcard_match(value, p) for p in patterns)
+    if operator in _EQUALS_OPERATORS:
+        return value in patterns
+    if operator in _NOTLIKE_OPERATORS:
+        return not any(wildcard_match(value, p) for p in patterns)
+    return value not in patterns
+
+
+def _operator_group(
+    operator: str, key_values: Dict[str, Any], context: Dict[str, Any]
+) -> Optional[bool]:
+    result = True
+    for key, values in key_values.items():
+        value = _principal_condition_value(context, key)
+        if value is _UNKNOWN:
+            return None
+        patterns = list(values) if isinstance(values, (list, tuple)) else [values]
+        result = result and _clause_satisfied(operator, value, patterns)
+    return result
 
 
 def resolve_principal_condition(
@@ -83,20 +108,10 @@ def resolve_principal_condition(
     for operator, key_values in condition.items():
         if operator not in _MODELED_OPERATORS or not isinstance(key_values, dict):
             return None
-        for key, values in key_values.items():
-            value = _principal_condition_value(context, key)
-            if value is _UNKNOWN:
-                return None
-            patterns = list(values) if isinstance(values, (list, tuple)) else [values]
-            if operator in _LIKE_OPERATORS:
-                satisfied = any(wildcard_match(value, p) for p in patterns)
-            elif operator in _EQUALS_OPERATORS:
-                satisfied = value in patterns
-            elif operator in _NOTLIKE_OPERATORS:
-                satisfied = not any(wildcard_match(value, p) for p in patterns)
-            else:
-                satisfied = value not in patterns
-            result = result and satisfied
+        group = _operator_group(operator, key_values, context)
+        if group is None:
+            return None
+        result = result and group
     return result
 
 
