@@ -1,15 +1,9 @@
+from typing import Any
+
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.helper_classes import PolicyWithSource
-from iam_ape.helper_types import AwsPolicyType, EntityType
+from iam_ape.helper_types import EntityType
 
-_ADMIN: AwsPolicyType = {
-    "Version": "2012-10-17",
-    "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
-}
-_FULL_AWS_ACCESS: AwsPolicyType = {
-    "Version": "2012-10-17",
-    "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
-}
 _GUARDRAIL_ACTIONS = [
     "bedrock:CreateGuardrail",
     "bedrock:UpdateGuardrail",
@@ -18,14 +12,22 @@ _GUARDRAIL_ACTIONS = [
 _SSO_ADMIN_PATTERN = "arn:aws:iam::*:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess*"
 
 
-def _scp(condition=None) -> AwsPolicyType:
-    statement = {"Effect": "Deny", "Action": _GUARDRAIL_ACTIONS, "Resource": ["*"]}
+def _policy(*statements: Any) -> Any:
+    return {"Version": "2012-10-17", "Statement": list(statements)}
+
+
+_ADMIN = _policy({"Effect": "Allow", "Action": ["*"], "Resource": ["*"]})
+_FULL_AWS_ACCESS = _policy({"Effect": "Allow", "Action": ["*"], "Resource": ["*"]})
+
+
+def _scp(condition: Any = None) -> Any:
+    statement: Any = {"Effect": "Deny", "Action": _GUARDRAIL_ACTIONS, "Resource": ["*"]}
     if condition:
         statement["Condition"] = condition
-    return {"Version": "2012-10-17", "Statement": [statement]}
+    return _policy(statement)
 
 
-def _evaluate(arn, scp, tags=None):
+def _evaluate(arn: str, scp: Any, tags: Any = None) -> Any:
     user = {
         "UserName": "u",
         "Arn": arn,
