@@ -582,23 +582,23 @@ class EffectivePolicyEvaluator:
                             curr_context["NotResource"].add(action_tuple.not_resource)
                         else:
                             curr_context["NotResource"] = {action_tuple.not_resource}
-                    access_level = self.policy_expander.get_action_access_level(
+                    for access_level in self.policy_expander.get_action_access_levels(
                         action_tuple.action
-                    )
-                    if cond := merge_condition(
-                        curr_context[access_level]
-                        .get(action_tuple.action, {})
-                        .get("Condition", {}),
-                        action_tuple.condition,
-                        negate=False,
-                        hashable=False,
                     ):
-                        curr_context[access_level][action_tuple.action][
-                            "Condition"
-                        ] = cond
-                    curr_context[access_level][action_tuple.action]["source"].add(
-                        action_tuple.source
-                    )
+                        if cond := merge_condition(
+                            curr_context[access_level]
+                            .get(action_tuple.action, {})
+                            .get("Condition", {}),
+                            action_tuple.condition,
+                            negate=False,
+                            hashable=False,
+                        ):
+                            curr_context[access_level][action_tuple.action][
+                                "Condition"
+                            ] = cond
+                        curr_context[access_level][action_tuple.action]["source"].add(
+                            action_tuple.source
+                        )
 
         for action_tuple in permissions_container.ineffective_permissions:
             service = action_to_service(action_tuple.action)
@@ -612,12 +612,12 @@ class EffectivePolicyEvaluator:
                     res["ineffective_permissions"][service][resource]["NotResource"] = {
                         action_tuple.not_resource
                     }
-            access_level = self.policy_expander.get_action_access_level(
+            for access_level in self.policy_expander.get_action_access_levels(
                 action_tuple.action
-            )
-            res["ineffective_permissions"][service][resource][access_level][
-                action_tuple.action
-            ]["denied_by"].add(action_tuple.denied_by)
+            ):
+                res["ineffective_permissions"][service][resource][access_level][
+                    action_tuple.action
+                ]["denied_by"].add(action_tuple.denied_by)
 
         res = json.loads(json.dumps(res, default=serialize_set))
 
