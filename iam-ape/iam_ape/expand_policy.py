@@ -292,9 +292,10 @@ class PolicyExpander:
 
         return res
 
-    def get_action_access_level(self, action: str) -> str:
+    def get_action_access_levels(self, action: str) -> List[str]:
         service, action_key = action.split(":", maxsplit=1)
-        return self.all_iam_actions[service][action_key]["access"]
+        access = self.all_iam_actions[service][action_key]["access"]
+        return [level.strip() for level in access.split(",")] if access else []
 
     def deflate_policy_statements(
         self,

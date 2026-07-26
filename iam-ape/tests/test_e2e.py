@@ -116,30 +116,28 @@ def test_e2e() -> None:
     )
 
     json_report = evaluator.create_json_report(res)
-    assert sum(
-        [
-            len(y)
-            for x in json_report["allowed_permissions"].values()
-            for v in x.values()
-            for y in v.values()
-        ]
-    ) == sum([len(x) for x in res.allowed_permissions.values()])
-    assert sum(
-        [
-            len(y)
-            for x in json_report["denied_permissions"].values()
-            for v in x.values()
-            for y in v.values()
-        ]
-    ) == sum([len(x) for x in res.denied_permissions.values()])
-    assert sum(
-        [
-            len(y)
-            for x in json_report["ineffective_permissions"].values()
-            for v in x.values()
-            for y in v.values()
-        ]
-    ) == len(res.ineffective_permissions)
+
+    def _distinct_action_count(section: dict) -> int:
+        total = 0
+        for service_map in section.values():
+            for resource_map in service_map.values():
+                actions: set = set()
+                for level, level_map in resource_map.items():
+                    if level == "NotResource":
+                        continue
+                    actions.update(level_map)
+                total += len(actions)
+        return total
+
+    assert _distinct_action_count(json_report["allowed_permissions"]) == sum(
+        [len(x) for x in res.allowed_permissions.values()]
+    )
+    assert _distinct_action_count(json_report["denied_permissions"]) == sum(
+        [len(x) for x in res.denied_permissions.values()]
+    )
+    assert _distinct_action_count(json_report["ineffective_permissions"]) == len(
+        res.ineffective_permissions
+    )
 
 
 def test_expand_minimize() -> None:
