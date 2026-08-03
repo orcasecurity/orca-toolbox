@@ -554,7 +554,9 @@ class EffectivePolicyEvaluator:
         self._scp_deny_result_cache: Dict[Any, Any] = {}
 
     def create_json_report(
-        self, permissions_container: PermissionsContainer
+        self,
+        permissions_container: PermissionsContainer,
+        include_denied_permissions: bool = True,
     ) -> FinalReportT:
         def action_to_service(action: str) -> str:
             return action.split(":")[0]
@@ -627,7 +629,11 @@ class EffectivePolicyEvaluator:
                 )
             ),
         }
+        # Building denied_permissions iterates the full (account-constant) SCP deny
+        # expansion per principal and dominates runtime; skip it for callers that don't read it.
         sections = ("allowed_permissions", "denied_permissions")
+        if not include_denied_permissions:
+            sections = ("allowed_permissions",)
         for section in sections:
             for action_tuple_set in getattr(permissions_container, section).values():
                 for action_tuple in action_tuple_set:
