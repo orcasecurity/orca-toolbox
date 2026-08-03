@@ -12,8 +12,11 @@ from iam_ape.helper_types import (
 
 
 class HashableList(list):
+    # Immutable by construction (only built here, never mutated after). Cache the hash so
+    # the same fixed conditions can be used as cache keys millions of times at O(1).
     def __init__(self, lst: list) -> None:
         super().__init__()
+        self._hash: Optional[int] = None
         for item in lst:
             if isinstance(item, dict):
                 self.append(HashableDict.recursively(item))
@@ -24,17 +27,28 @@ class HashableList(list):
                 self.append(item)
 
     def __hash__(self) -> int:  # type: ignore[override]
-        return hash(frozenset(self))
+        if self._hash is None:
+            self._hash = hash(frozenset(self))
+        return self._hash
 
 
 class HashableDict(dict):
+    # Immutable by construction (produced only via recursively(), never mutated after).
+    _hash: Optional[int] = None
+
     def __hash__(self) -> int:  # type: ignore[override]
-        return hash(tuple(sorted(self.items())))
+        if self._hash is None:
+            self._hash = hash(tuple(sorted(self.items())))
+        return self._hash
 
     @classmethod
     def recursively(cls, dict_obj: Optional[Dict[Any, Any]]):
         if dict_obj is None:
             return None
+        if isinstance(dict_obj, HashableDict):
+            # Already fully converted (HashableDicts are only produced here) — avoid
+            # re-wrapping the same condition millions of times on the hot path.
+            return dict_obj
         new_dict = {}
         for key, value in dict_obj.items():
             if isinstance(value, dict):
