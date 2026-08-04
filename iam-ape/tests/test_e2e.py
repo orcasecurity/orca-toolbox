@@ -140,6 +140,55 @@ def test_e2e() -> None:
     )
 
 
+def _canonical(obj):
+    """Order-independent view of a report section for comparison; source sets
+    serialize to lists whose order is not significant."""
+    if isinstance(obj, dict):
+        return {k: _canonical(v) for k, v in sorted(obj.items())}
+    if isinstance(obj, list):
+        return sorted((_canonical(v) for v in obj), key=repr)
+    return obj
+
+
+def test_include_denied_permissions_preserves_read_sections() -> None:
+    """create_json_report(include_denied_permissions=False) must drop only the
+    never-read denied_permissions section and leave the consumer-read sections
+    (allowed_permissions / ineffective_permissions) byte-identical."""
+    with open(
+        os.path.join(
+            os.path.dirname(__file__),
+            "test_data/test_account_authorizations_details.json",
+        )
+    ) as f:
+        auth_details = AuthorizationDetails(json.load(f))
+    with open(
+        os.path.join(os.path.dirname(__file__), "test_data/test_scp_policy_1.json")
+    ) as f:
+        scp_data = json.load(f)
+    scp_policies = [
+        PolicyWithSource(
+            scp_data["Policy"]["PolicySummary"]["Arn"],
+            json.loads(scp_data["Policy"]["Content"]),
+        )
+    ]
+    evaluator = EffectivePolicyEvaluator(auth_details, scp_policies)
+    res = evaluator.evaluate(
+        arn="arn:aws:iam::123456789012:user/TestUser1", entity_type=EntityType.user
+    )
+
+    full = evaluator.create_json_report(res)
+    without_denied = evaluator.create_json_report(res, include_denied_permissions=False)
+
+    assert full["denied_permissions"]  # fixture has a denied section to skip
+    assert without_denied["denied_permissions"] == {}
+    assert _canonical(without_denied["allowed_permissions"]) == _canonical(
+        full["allowed_permissions"]
+    )
+    assert _canonical(without_denied["ineffective_permissions"]) == _canonical(
+        full["ineffective_permissions"]
+    )
+
+
 def test_expand_minimize() -> None:
     evaluator = EffectivePolicyEvaluator(AuthorizationDetails({}), None)
     expanded_policy = evaluator.policy_expander.expand_policies(

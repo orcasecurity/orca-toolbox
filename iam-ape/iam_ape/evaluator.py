@@ -631,9 +631,11 @@ class EffectivePolicyEvaluator:
         }
         # Building denied_permissions iterates the full (account-constant) SCP deny
         # expansion per principal and dominates runtime; skip it for callers that don't read it.
-        sections = ("allowed_permissions", "denied_permissions")
-        if not include_denied_permissions:
-            sections = ("allowed_permissions",)
+        sections = (
+            ("allowed_permissions", "denied_permissions")
+            if include_denied_permissions
+            else ("allowed_permissions",)
+        )
         for section in sections:
             for action_tuple_set in getattr(permissions_container, section).values():
                 for action_tuple in action_tuple_set:
