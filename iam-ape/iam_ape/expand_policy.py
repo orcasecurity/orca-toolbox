@@ -151,14 +151,10 @@ class PolicyExpander:
         self._all_service_wildcards: List[str] = [
             f"{k}:*" for k, v in self.all_iam_actions.items() if len(v) > 0
         ]
-        # Per-instance (per-scan) cache: an action's access levels are constant for a
-        # given actions DB. Instance-scoped so a refreshed DB (new expander) starts clean.
+        # Instance-scoped (per actions DB) so a refreshed DB starts clean.
         self._access_levels_cache: Dict[str, List[str]] = {}
-        # Condition-free expansion cache, keyed by (action-or-notactions, resource,
-        # not_resource, source). A managed policy's expansion is identical across every
-        # principal that attaches it (same source ARN), so this collapses re-expansion of
-        # shared policies (e.g. PowerUserAccess/NotAction expanded once, not per-role).
-        # Condition-free Actions are never mutated, so sharing them is safe. Instance-scoped.
+        # Condition-free managed-policy expansions, shared across principals that attach
+        # the same policy. Condition-free Actions are never mutated, so sharing is safe.
         self._expansion_cache: Dict[Tuple[Any, ...], Dict[str, Set[Action]]] = {}
 
     @staticmethod
@@ -229,9 +225,8 @@ class PolicyExpander:
 
     def expand_action(self, iam_action: Action) -> Dict[str, Set[Action]]:
         cache_key: Optional[Tuple[Any, ...]] = None
-        # Cache only managed-policy sources (ARN sids): their content is stable and shared
-        # across principals. Inline sids are a policy NAME, not content-unique -> would
-        # collide across roles that happen to name an inline policy the same.
+        # Only managed-policy (ARN) sources are content-stable; inline sids are names that
+        # would collide across roles.
         if iam_action.condition is None and iam_action.source.startswith("arn:"):
             cache_key = (
                 "a",
@@ -420,9 +415,7 @@ class PolicyExpander:
                                         operator_conditions
                                     )
                             else:
-                                # Copy so merged_condition never aliases (and the branch
-                                # above never .update()s in place) an Action's own condition
-                                # sub-dict; required once conditions are shared across principals.
+                                # Copy so we never mutate a shared Action's condition in place.
                                 merged_condition[operator] = (
                                     dict(operator_conditions)
                                     if isinstance(operator_conditions, dict)

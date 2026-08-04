@@ -31,10 +31,8 @@ def should_deny(
     merge_cache: Optional[Dict[Any, Any]] = None,
     result_cache: Optional[Dict[Any, Any]] = None,
 ) -> Tuple[bool, Set[Action], Optional[str]]:
-    # When result_cache is provided (only for the account-fixed SCP denied-set), the whole
-    # deny decision for an action is reused across every entity that has it. The SCP effect
-    # is identical for all identities, so ~72% of this work is redundant across principals.
-    # Pure: should_deny is a function of (action, denied_set); denied_set is fixed here.
+    # result_cache memoizes the deny decision per action; safe only for the account-fixed
+    # SCP denied-set, whose effect is identical across every entity.
     if result_cache is None:
         return _should_deny_impl(iam_action, denied_actions, merge_cache)
     cached = result_cache.get(iam_action)
@@ -54,16 +52,15 @@ def _should_deny_impl(
     Check if an action is denied by a list of denied actions
     :param iam_action:
     :param denied_actions:
-    :param merge_cache: optional (allow_cond, deny_cond, negate) -> merged-condition cache.
-        The same fixed SCP deny conditions are merged for millions of allowed actions;
-        caching by condition CONTENT collapses the dominant deny-path cost. Pure: merge is
-        input-only, so the cache is safe to share across principals.
+    :param merge_cache: optional condition-merge cache, keyed by content; safe to share.
     :return: denied, partially_denied_actions, source
     """
     res = set()
     partially_denied = False
 
-    def _merge(allow_cond: Optional[Dict[str, Any]], deny_cond: Optional[Dict[str, Any]]) -> Any:
+    def _merge(
+        allow_cond: Optional[Dict[str, Any]], deny_cond: Optional[Dict[str, Any]]
+    ) -> Any:
         if merge_cache is None:
             return merge_condition(allow_cond, deny_cond)
         key = (allow_cond, deny_cond, True)
@@ -543,14 +540,8 @@ class EffectivePolicyEvaluator:
             if scp_policies
             else PermissionsContainer()
         )
-        # Deny-path condition-merge cache, keyed by (allow_cond, deny_cond, negate).
-        # Account-fixed SCP deny conditions are merged for millions of allowed actions;
-        # this collapses that (the dominant SCP-hierarchy cost). Shared across principals
-        # (merge is input-pure) and instance-scoped so a refreshed actions DB starts clean.
+        # Account-fixed SCP deny caches, shared across principals within one account scan.
         self._deny_merge_cache: Dict[Any, Any] = {}
-        # Per-action should_deny RESULT cache for the account-fixed SCP denied-set. The SCP
-        # effect is identical for every identity, so this reuses each deny decision across
-        # entities (the dominant SCP-hierarchy cost) instead of recomputing it per entity.
         self._scp_deny_result_cache: Dict[Any, Any] = {}
 
     def create_json_report(
@@ -629,8 +620,8 @@ class EffectivePolicyEvaluator:
                 )
             ),
         }
-        # Building denied_permissions iterates the full (account-constant) SCP deny
-        # expansion per principal and dominates runtime; skip it for callers that don't read it.
+        # denied_permissions re-serializes the full SCP deny expansion per principal and
+        # dominates runtime; skip it for callers that don't read it.
         sections = (
             ("allowed_permissions", "denied_permissions")
             if include_denied_permissions
@@ -662,7 +653,9 @@ class EffectivePolicyEvaluator:
                                 hashable=False,
                             ):
                                 level_map[action_tuple.action]["Condition"] = cond
-                        level_map[action_tuple.action]["source"].add(action_tuple.source)
+                        level_map[action_tuple.action]["source"].add(
+                            action_tuple.source
+                        )
 
         for action_tuple in permissions_container.ineffective_permissions:
             service = action_to_service(action_tuple.action)
@@ -764,8 +757,7 @@ class EffectivePolicyEvaluator:
         denied_permissions = direct_permissions.denied_permissions
         for boundary in (permission_boundary, self.scp_policy):
             if boundary.allowed_permissions or boundary.denied_permissions:
-                # Only the SCP is account-fixed across entities, so only its deny decisions
-                # are cacheable; the per-entity permission boundary varies and must not be.
+                # Only the account-fixed SCP is cacheable; the per-entity boundary is not.
                 deny_result_cache = (
                     self._scp_deny_result_cache if boundary is self.scp_policy else None
                 )

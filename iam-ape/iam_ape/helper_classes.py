@@ -12,8 +12,7 @@ from iam_ape.helper_types import (
 
 
 class HashableList(list):
-    # Immutable by construction (only built here, never mutated after). Cache the hash so
-    # the same fixed conditions can be used as cache keys millions of times at O(1).
+    # Immutable by construction; cache the hash so these serve as cache keys cheaply.
     def __init__(self, lst: list) -> None:
         super().__init__()
         self._hash: Optional[int] = None
@@ -33,7 +32,7 @@ class HashableList(list):
 
 
 class HashableDict(dict):
-    # Immutable by construction (produced only via recursively(), never mutated after).
+    # Immutable by construction; cache the hash so these serve as cache keys cheaply.
     _hash: Optional[int] = None
 
     def __hash__(self) -> int:  # type: ignore[override]
@@ -46,9 +45,7 @@ class HashableDict(dict):
         if dict_obj is None:
             return None
         if isinstance(dict_obj, HashableDict):
-            # Already fully converted (HashableDicts are only produced here) — avoid
-            # re-wrapping the same condition millions of times on the hot path.
-            return dict_obj
+            return dict_obj  # already converted; skip re-wrapping on the hot path
         new_dict = {}
         for key, value in dict_obj.items():
             if isinstance(value, dict):
