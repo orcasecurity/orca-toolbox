@@ -1,6 +1,7 @@
+import logging
 from collections import namedtuple
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set
 
 from iam_ape.consts import PolicyElement
 from iam_ape.helper_types import (
@@ -10,18 +11,50 @@ from iam_ape.helper_types import (
     PermissionsContainerDict,
 )
 
+logger = logging.getLogger("IAM-APE:cache")
 
-class BoundedDict(dict):
-    """dict with a max size; evicts the oldest entry (FIFO) on overflow so per-account
-    caches cannot grow without bound (guards against OOM on pathological accounts)."""
+# OOM safety valve for the per-account Action-holding caches (deny/expansion): the count of
+# retained Action objects at which the cache clears itself. Sized well above the observed
+# working set (~2 GB of caches sat far below this) so it only trips on pathological accounts.
+CACHE_MAX_RETAINED_ACTIONS = 4_000_000
 
-    def __init__(self, maxsize: int) -> None:
+
+class CircuitBreakerCache(dict):
+    """A per-account cache that clears itself once a running weight counter crosses
+    ``max_weight`` — an OOM safety valve, not a working-set cap. Size it above the
+    normal working set so it never trips under real load; a trip is logged because it
+    means the account is large enough that the cache is thrashing, which is worth knowing.
+
+    ``weigh`` maps a value to its contribution to the counter (Action count for the caches
+    whose ``Set[Action]`` values dominate memory; defaults to 1 = entry count). Only
+    whole-cache clears happen — never single-key eviction — so the counter is exact with
+    add-on-insert / reset-on-clear and never needs an O(n) rescan (which would reintroduce
+    the very per-insert cost a size cap is meant to avoid)."""
+
+    def __init__(
+        self,
+        max_weight: int,
+        weigh: Optional[Callable[[Any], int]] = None,
+        name: str = "cache",
+    ) -> None:
         super().__init__()
-        self._maxsize = maxsize
+        self._max_weight = max_weight
+        self._weigh = weigh
+        self._weight = 0
+        self._name = name
 
     def __setitem__(self, key: Any, value: Any) -> None:
-        if key not in self and len(self) >= self._maxsize:
-            del self[next(iter(self))]
+        if key not in self:
+            weight = self._weigh(value) if self._weigh is not None else 1
+            if self._weight + weight > self._max_weight:
+                logger.warning(
+                    "%s exceeded %d; clearing (account cache is thrashing)",
+                    self._name,
+                    self._max_weight,
+                )
+                self.clear()
+                self._weight = 0
+            self._weight += weight
         super().__setitem__(key, value)
 
 
