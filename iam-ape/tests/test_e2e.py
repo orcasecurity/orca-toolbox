@@ -528,18 +528,23 @@ def test_capped_memo_cache_stops_inserting_at_cap() -> None:
     )
     cache["a"] = [1, 1]  # weight 2
     cache["b"] = [1, 1]  # weight 4
-    assert set(cache) == {"a", "b"} and cache._weight == 4
+    assert set(cache) == {"a", "b"}
+    assert cache._weight == 4
     cache["c"] = [1, 1]  # 4+2=6 > 5 -> skipped, early entries kept
-    assert set(cache) == {"a", "b"} and cache._weight == 4
+    assert set(cache) == {"a", "b"}
+    assert cache._weight == 4
     cache["d"] = [1]  # 4+1=5 <= 5 -> a smaller entry still fits
-    assert "d" in cache and cache._weight == 5
+    assert "d" in cache
+    assert cache._weight == 5
     cache["e"] = [1]  # 5+1=6 > 5 -> skipped
     assert "e" not in cache
     # Re-inserting an existing key must not double-count toward the weight.
     cache["a"] = [9, 9, 9]
     assert cache._weight == 5
     cache.clear()
-    assert len(cache) == 0 and cache._weight == 0 and cache._capped is False
+    assert len(cache) == 0
+    assert cache._weight == 0
+    assert cache._capped is False
 
 
 def test_deny_cache_guard_skips_when_source_is_a_denied_source() -> None:
