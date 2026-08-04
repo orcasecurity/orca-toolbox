@@ -1,3 +1,4 @@
+import copy
 import functools
 import json
 import logging
@@ -13,6 +14,7 @@ from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
 from iam_ape.exceptions import UnknownServiceExepction
 from iam_ape.helper_classes import (
     Action,
+    BoundedDict,
     HashableDict,
     HashableList,
     PermissionsContainer,
@@ -155,7 +157,9 @@ class PolicyExpander:
         self._access_levels_cache: Dict[str, List[str]] = {}
         # Condition-free managed-policy expansions, shared across principals that attach
         # the same policy. Condition-free Actions are never mutated, so sharing is safe.
-        self._expansion_cache: Dict[Tuple[Any, ...], Dict[str, Set[Action]]] = {}
+        self._expansion_cache: Dict[
+            Tuple[Any, ...], Dict[str, Set[Action]]
+        ] = BoundedDict(100_000)
 
     @staticmethod
     def _init_iam_actions(
@@ -237,13 +241,11 @@ class PolicyExpander:
             )
             cached = self._expansion_cache.get(cache_key)
             if cached is not None:
-                return cached
+                return {k: set(v) for k, v in cached.items()}
         res = self._expand_action(iam_action)
         if cache_key is not None:
-            result = dict(res)
-            self._expansion_cache[cache_key] = result
-            return result
-        return res
+            self._expansion_cache[cache_key] = {k: set(v) for k, v in res.items()}
+        return dict(res)
 
     def _expand_action(self, iam_action: Action) -> Dict[str, Set[Action]]:
         res: Dict[str, Set[Action]] = defaultdict(set)
@@ -303,13 +305,11 @@ class PolicyExpander:
             )
             cached = self._expansion_cache.get(cache_key)
             if cached is not None:
-                return cached
+                return {k: set(v) for k, v in cached.items()}
         res = self._expand_not_action(notactions, statement, sid)
         if cache_key is not None:
-            result = dict(res)
-            self._expansion_cache[cache_key] = result
-            return result
-        return res
+            self._expansion_cache[cache_key] = {k: set(v) for k, v in res.items()}
+        return dict(res)
 
     def _expand_not_action(
         self, notactions: List[str], statement: AwsPolicyStatementType, sid: str
@@ -345,12 +345,12 @@ class PolicyExpander:
     def get_action_access_levels(self, action: str) -> List[str]:
         cached = self._access_levels_cache.get(action)
         if cached is not None:
-            return cached
+            return list(cached)
         service, action_key = action.split(":", maxsplit=1)
         access = self.all_iam_actions[service][action_key]["access"]
         result = [level.strip() for level in access.split(",")] if access else []
         self._access_levels_cache[action] = result
-        return result
+        return list(result)
 
     def deflate_policy_statements(
         self,
@@ -523,4 +523,6 @@ class PolicyExpander:
         else:
             policy_res["Statement"] = list(final_statements.values())
 
-        return normalize_policy(policy_res)
+        # normalize_policy mutates in place; copy so a shared Action.condition (reused
+        # across principals via the caches) is never written to.
+        return normalize_policy(copy.deepcopy(policy_res))

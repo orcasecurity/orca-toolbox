@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 
@@ -201,3 +202,178 @@ def test_expand_minimize() -> None:
     assert hash(HashableList(minimized_policy["Statement"])) == hash(
         HashableList(admin_policy["Statement"])
     )
+
+
+def _role(name: str, with_boundary: bool) -> dict:
+    role = {
+        "Arn": f"arn:aws:iam::123456789012:role/{name}",
+        "RoleName": name,
+        "RoleId": f"AROA{name}",
+        "Path": "/",
+        "AttachedManagedPolicies": [],
+        "InstanceProfileList": [],
+        "RolePolicyList": [
+            {
+                "PolicyName": "inline",
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "s3:GetObject",
+                                "s3:PutObject",
+                                "ec2:DescribeInstances",
+                            ],
+                            "Resource": ["*"],
+                        }
+                    ],
+                },
+            }
+        ],
+        "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": []},
+    }
+    if with_boundary:
+        role["PermissionsBoundary"] = {
+            "PermissionsBoundaryArn": "arn:aws:iam::123456789012:policy/pb",
+            "PermissionsBoundaryType": "Policy",
+        }
+    return role
+
+
+def test_shared_evaluator_matches_standalone() -> None:
+    """One EffectivePolicyEvaluator reused across principals (the clouder pattern) must
+    yield, per principal, exactly what a fresh per-principal evaluator yields. Regression
+    guard for cross-principal condition aliasing: conditions reused across principals via
+    the caches must never be mutated in place (e.g. by shrink_policy's normalize_policy)."""
+    boundary_doc = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": ["s3:*", "ec2:*"],
+                "Resource": ["*"],
+                "Condition": {"StringEquals": {"aws:RequestedRegion": "us-east-1"}},
+            }
+        ],
+    }
+    auth_data = {
+        "RoleDetailList": [_role("R0", True), _role("R1", False), _role("R2", True)],
+        "UserDetailList": [],
+        "GroupDetailList": [],
+        "Policies": [
+            {
+                "PolicyName": "pb",
+                "Arn": "arn:aws:iam::123456789012:policy/pb",
+                "PolicyId": "PB",
+                "Path": "/",
+                "DefaultVersionId": "v1",
+                "PolicyVersionList": [
+                    {
+                        "Document": boundary_doc,
+                        "VersionId": "v1",
+                        "IsDefaultVersion": True,
+                    }
+                ],
+            }
+        ],
+    }
+    # Deny-bearing SCP with a *scalar* (un-normalized) condition — the in-place mutation trigger.
+    deny_scp = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Deny",
+                "Action": ["s3:*"],
+                "Resource": ["*"],
+                "Condition": {"StringEquals": {"aws:RequestedRegion": "us-east-1"}},
+            }
+        ],
+    }
+    full_access = {
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+    }
+
+    def scps() -> list:
+        return [
+            PolicyWithSource("p-FullAWSAccess", copy.deepcopy(full_access)),
+            PolicyWithSource("p-deny", copy.deepcopy(deny_scp)),
+        ]
+
+    arns = [f"arn:aws:iam::123456789012:role/{n}" for n in ("R0", "R1", "R2")]
+
+    def shrink_of(evaluator: EffectivePolicyEvaluator, arn: str):
+        res = evaluator.evaluate(arn=arn, entity_type=EntityType.role)
+        return _canonical(
+            evaluator.policy_expander.shrink_policy(res.allowed_permissions)
+        )
+
+    auth = AuthorizationDetails(auth_data)
+    standalone = {
+        arn: shrink_of(EffectivePolicyEvaluator(auth, scps()), arn) for arn in arns
+    }
+    shared_evaluator = EffectivePolicyEvaluator(auth, scps())
+    shared = {arn: shrink_of(shared_evaluator, arn) for arn in arns}
+
+    for arn in arns:
+        assert (
+            shared[arn] == standalone[arn]
+        ), f"{arn} result depends on evaluation order"
+
+
+def test_shrink_does_not_mutate_shared_scp() -> None:
+    """shrink_policy must not mutate the evaluator's shared scp_policy in place. Regression:
+    normalize_policy rewrote a scalar condition value into a list, corrupting the SCP for
+    every principal evaluated afterwards through the same (reused) evaluator."""
+    role = _role("R1", with_boundary=False)
+    auth = AuthorizationDetails(
+        {
+            "RoleDetailList": [role],
+            "UserDetailList": [],
+            "GroupDetailList": [],
+            "Policies": [],
+        }
+    )
+    # scalar (un-normalized) condition value is the mutation trigger
+    deny_scp = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Deny",
+                "Action": ["s3:GetObject"],
+                "Resource": ["*"],
+                "Condition": {"StringEquals": {"aws:RequestedRegion": "us-east-1"}},
+            }
+        ],
+    }
+    full_access = {
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+    }
+    evaluator = EffectivePolicyEvaluator(
+        auth,
+        [
+            PolicyWithSource("p-FullAWSAccess", copy.deepcopy(full_access)),
+            PolicyWithSource("p-deny", copy.deepcopy(deny_scp)),
+        ],
+    )
+
+    def scp_conditions():
+        return _canonical(
+            [
+                dict(a.condition)
+                for actions in evaluator.scp_policy.denied_permissions.values()
+                for a in actions
+                if a.condition
+            ]
+        )
+
+    before = scp_conditions()
+    res = evaluator.evaluate(
+        arn="arn:aws:iam::123456789012:role/R1", entity_type=EntityType.role
+    )
+    evaluator.policy_expander.shrink_policy(res.allowed_permissions)
+    assert (
+        scp_conditions() == before
+    ), "shrink_policy mutated the shared scp_policy in place"

@@ -11,6 +11,20 @@ from iam_ape.helper_types import (
 )
 
 
+class BoundedDict(dict):
+    """dict with a max size; evicts the oldest entry (FIFO) on overflow so per-account
+    caches cannot grow without bound (guards against OOM on pathological accounts)."""
+
+    def __init__(self, maxsize: int) -> None:
+        super().__init__()
+        self._maxsize = maxsize
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        if key not in self and len(self) >= self._maxsize:
+            del self[next(iter(self))]
+        super().__setitem__(key, value)
+
+
 class HashableList(list):
     # Immutable by construction; cache the hash so these serve as cache keys cheaply.
     def __init__(self, lst: list) -> None:
@@ -45,7 +59,9 @@ class HashableDict(dict):
         if dict_obj is None:
             return None
         if isinstance(dict_obj, HashableDict):
-            return dict_obj  # already converted; skip re-wrapping on the hot path
+            # Already converted; skip re-wrapping on the hot path. Safe because no code
+            # mutates a condition in place (shrink_policy normalizes a copy).
+            return dict_obj
         new_dict = {}
         for key, value in dict_obj.items():
             if isinstance(value, dict):

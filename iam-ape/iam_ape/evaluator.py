@@ -9,6 +9,7 @@ from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
 from iam_ape.expand_policy import PolicyExpander
 from iam_ape.helper_classes import (
     Action,
+    BoundedDict,
     IneffectiveAction,
     PermissionsContainer,
     PolicyWithSource,
@@ -514,8 +515,9 @@ class EffectivePolicyEvaluator:
             else PermissionsContainer()
         )
         # Account-fixed SCP deny caches, shared across principals within one account scan.
-        self._deny_merge_cache: Dict[Any, Any] = {}
-        self._scp_deny_result_cache: Dict[Any, Any] = {}
+        # Bounded so a pathological account cannot grow them without limit.
+        self._deny_merge_cache: Dict[Any, Any] = BoundedDict(100_000)
+        self._scp_deny_result_cache: Dict[Any, Any] = BoundedDict(100_000)
 
     def create_json_report(
         self,
