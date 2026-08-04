@@ -28,8 +28,10 @@ class CappedMemoCache(dict):
     shared early entries stay cached. Deliberately not clear-on-overflow, which would repeatedly
     discard those hot entries and pay to rebuild them (measured ~+18% wall on btg).
 
-    ``weigh`` maps a value to its weight (default 1 = entry count; the expansion cache weighs by
-    retained Action count so a cap bounds bytes, not entries). Callers insert each key once and
+    ``weigh`` maps a value to its weight. Entry count (default 1) is the right unit when values are
+    shared references whose per-entry bytes are near-constant (the condition-merge cache); the
+    expansion cache weighs by retained Action count instead, because its per-Action bytes vary ~6x
+    with the condition, so an entry cap would not bound its memory. Callers insert each key once and
     never overwrite, so the counter is monotonic (add-on-accepted-insert, reset only by clear());
     an overwrite would leave it unchanged — a benign under-count the insert-once contract rules
     out. Reaching the cap is logged once (the account is running partially uncached)."""
