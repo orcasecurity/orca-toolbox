@@ -6,9 +6,11 @@ from iam_ape.evaluator import (
     _PASSTHROUGH,
     AuthorizationDetails,
     EffectivePolicyEvaluator,
+    _cached_deny_verdict,
 )
 from iam_ape.helper_classes import (
-    CircuitBreakerCache,
+    Action,
+    CappedMemoCache,
     HashableDict,
     HashableList,
     PolicyWithSource,
@@ -517,18 +519,47 @@ def test_deny_cache_source_strip_matches_uncached() -> None:
     ), "re-stamp path not exercised"
 
 
-def test_circuit_breaker_cache_clears_on_overflow() -> None:
-    """CircuitBreakerCache clears wholesale (never single-key eviction) once the weight
-    counter would exceed its max, and the counter stays exact via add-on-insert/reset-on-clear."""
-    cache: CircuitBreakerCache = CircuitBreakerCache(
+def test_capped_memo_cache_stops_inserting_at_cap() -> None:
+    """CappedMemoCache skips a new key once it would exceed the cap (graceful degradation to
+    uncached) while keeping the hot early entries — it must NOT thrash-clear. A smaller entry
+    that still fits is accepted; clear() resets the counter."""
+    cache: CappedMemoCache = CappedMemoCache(
         max_weight=5, weigh=lambda v: len(v), name="test"
     )
     cache["a"] = [1, 1]  # weight 2
     cache["b"] = [1, 1]  # weight 4
-    assert set(cache) == {"a", "b"}
-    cache["c"] = [1, 1]  # would be 6 > 5 -> clear, then hold only "c"
-    assert set(cache) == {"c"}
-    assert cache._weight == 2
+    assert set(cache) == {"a", "b"} and cache._weight == 4
+    cache["c"] = [1, 1]  # 4+2=6 > 5 -> skipped, early entries kept
+    assert set(cache) == {"a", "b"} and cache._weight == 4
+    cache["d"] = [1]  # 4+1=5 <= 5 -> a smaller entry still fits
+    assert "d" in cache and cache._weight == 5
+    cache["e"] = [1]  # 5+1=6 > 5 -> skipped
+    assert "e" not in cache
     # Re-inserting an existing key must not double-count toward the weight.
-    cache["c"] = [1, 1, 1]
-    assert cache._weight == 2
+    cache["a"] = [9, 9, 9]
+    assert cache._weight == 5
+    cache.clear()
+    assert len(cache) == 0 and cache._weight == 0 and cache._capped is False
+
+
+def test_deny_cache_guard_skips_when_source_is_a_denied_source() -> None:
+    """The source-stripped key is sound only where should_deny's exact-equality shortcut cannot
+    fire — i.e. the action's source is not one of that action's denied sources. When it IS, the
+    guard must refuse to cache; otherwise a later principal could hit an entry whose verdict was
+    source-specific. This is the entire soundness argument for the stripped key, so pin it."""
+    denied = {"s3:GetObject": {Action("s3:GetObject", "*", None, None, "p-deny")}}
+    denied_sources = {"s3:GetObject": frozenset({"p-deny"})}
+
+    # source is NOT a denied source -> safe to cache
+    safe = Action(
+        "s3:GetObject", "*", None, None, "arn:aws:iam::123456789012:policy/mp"
+    )
+    cache: dict = {}
+    _cached_deny_verdict(safe, denied, cache, denied_sources)
+    assert len(cache) == 1, "a non-colliding source must be cached"
+
+    # source IS a denied source -> the equality shortcut can fire; guard must NOT cache
+    colliding = Action("s3:GetObject", "*", None, None, "p-deny")
+    guarded: dict = {}
+    _cached_deny_verdict(colliding, denied, guarded, denied_sources)
+    assert guarded == {}, "guard must not cache when the source is a denied source"

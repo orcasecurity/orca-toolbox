@@ -8,9 +8,9 @@ from iam_ape.consts import PolicyElement
 from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
 from iam_ape.expand_policy import PolicyExpander
 from iam_ape.helper_classes import (
-    CACHE_MAX_RETAINED_ACTIONS,
+    CACHE_MAX_WEIGHT,
     Action,
-    CircuitBreakerCache,
+    CappedMemoCache,
     IneffectiveAction,
     PermissionsContainer,
     PolicyWithSource,
@@ -565,15 +565,16 @@ class EffectivePolicyEvaluator:
             else PermissionsContainer()
         )
         # Account-fixed SCP deny caches, shared across principals within one account scan.
-        # Circuit-breaker bounded so a pathological account cannot grow them toward OOM: the
-        # deny cache is weighed by retained Action count (its Set[Action] values, not its key
-        # count, are the memory), the small merge cache by entry count.
-        self._deny_merge_cache: Dict[Any, Any] = CircuitBreakerCache(
+        # Capped so a large account cannot grow them toward OOM: the deny cache is weighed by
+        # retained Action count (its Set[Action] values, not its key count, are the memory) plus
+        # 1 per key so zero-retention entries (sentinels, full denies) are still bounded; the
+        # small merge cache by entry count.
+        self._deny_merge_cache: Dict[Any, Any] = CappedMemoCache(
             200_000, name="iam_ape merge cache"
         )
-        self._scp_deny_result_cache: Dict[Any, Any] = CircuitBreakerCache(
-            CACHE_MAX_RETAINED_ACTIONS,
-            weigh=lambda v: 0 if v is _PASSTHROUGH else len(v[1]),
+        self._scp_deny_result_cache: Dict[Any, Any] = CappedMemoCache(
+            CACHE_MAX_WEIGHT,
+            weigh=lambda v: 1 if v is _PASSTHROUGH else 1 + len(v[1]),
             name="iam_ape SCP deny cache",
         )
         # Sources of each action's SCP deny statements — lets the deny cache key drop

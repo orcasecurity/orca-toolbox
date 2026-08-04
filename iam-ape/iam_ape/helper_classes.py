@@ -13,23 +13,27 @@ from iam_ape.helper_types import (
 
 logger = logging.getLogger("IAM-APE:cache")
 
-# OOM safety valve for the per-account Action-holding caches (deny/expansion): the count of
-# retained Action objects at which the cache clears itself. Sized well above the observed
-# working set (~2 GB of caches sat far below this) so it only trips on pathological accounts.
-CACHE_MAX_RETAINED_ACTIONS = 4_000_000
+# Hard weight ceiling for the per-account Set[Action]-valued caches (deny/expansion): roughly
+# the retained Action count at which a cache stops accepting new keys. On a large account (btg)
+# this is reached inside the working set, so it must degrade gracefully rather than thrash — see
+# CappedMemoCache. Each cache carries its own budget, so the combined ceiling is 2x this. Tune
+# against measured hit-rate-vs-cap; ~1 M weight is ~100-250 MB per cache.
+CACHE_MAX_WEIGHT = 1_000_000
 
 
-class CircuitBreakerCache(dict):
-    """A per-account cache that clears itself once a running weight counter crosses
-    ``max_weight`` — an OOM safety valve, not a working-set cap. Size it above the
-    normal working set so it never trips under real load; a trip is logged because it
-    means the account is large enough that the cache is thrashing, which is worth knowing.
+class CappedMemoCache(dict):
+    """A memo with a hard weight ceiling: once inserting a *new* key would exceed ``max_weight``
+    that key is skipped (recomputed on the next lookup) instead of stored. Every use here is a
+    pure memo — recompute-on-miss yields the same value — so refusing inserts at the cap is
+    correctness-neutral and degrades gracefully to "uncached beyond the cap", while the hot,
+    shared early entries stay cached. Deliberately not clear-on-overflow, which would repeatedly
+    discard those hot entries and pay to rebuild them (measured ~+18% wall on btg).
 
-    ``weigh`` maps a value to its contribution to the counter (Action count for the caches
-    whose ``Set[Action]`` values dominate memory; defaults to 1 = entry count). Only
-    whole-cache clears happen — never single-key eviction — so the counter is exact with
-    add-on-insert / reset-on-clear and never needs an O(n) rescan (which would reintroduce
-    the very per-insert cost a size cap is meant to avoid)."""
+    ``weigh`` maps a value to its weight; entries are weighed at least 1 so zero-retention
+    entries (pass-through sentinels, full denies) are still bounded by key count. Callers insert
+    each key once and never overwrite, so the counter is monotonic (add-on-accepted-insert, reset
+    only by clear()); an overwrite would leave it unchanged — a benign under-count the insert-once
+    contract rules out. Reaching the cap is logged once (the account is running partially uncached)."""
 
     def __init__(
         self,
@@ -42,20 +46,27 @@ class CircuitBreakerCache(dict):
         self._weigh = weigh
         self._weight = 0
         self._name = name
+        self._capped = False
 
     def __setitem__(self, key: Any, value: Any) -> None:
         if key not in self:
             weight = self._weigh(value) if self._weigh is not None else 1
             if self._weight + weight > self._max_weight:
-                logger.warning(
-                    "%s exceeded %d; clearing (account cache is thrashing)",
-                    self._name,
-                    self._max_weight,
-                )
-                self.clear()
-                self._weight = 0
+                if not self._capped:
+                    self._capped = True
+                    logger.warning(
+                        "%s reached its %d-weight cap; account running partially uncached",
+                        self._name,
+                        self._max_weight,
+                    )
+                return
             self._weight += weight
         super().__setitem__(key, value)
+
+    def clear(self) -> None:
+        super().clear()
+        self._weight = 0
+        self._capped = False
 
 
 class HashableList(list):

@@ -13,9 +13,9 @@ from requests.structures import CaseInsensitiveDict
 from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
 from iam_ape.exceptions import UnknownServiceExepction
 from iam_ape.helper_classes import (
-    CACHE_MAX_RETAINED_ACTIONS,
+    CACHE_MAX_WEIGHT,
     Action,
-    CircuitBreakerCache,
+    CappedMemoCache,
     HashableDict,
     HashableList,
     PermissionsContainer,
@@ -159,12 +159,13 @@ class PolicyExpander:
         # Condition-free managed-policy expansions, shared across principals that attach
         # the same policy. Condition-free Actions are never mutated, so sharing is safe.
         # These Set[Action] values (a single admin expansion is tens of thousands of Actions)
-        # are the cache's memory, so it is bounded by retained Action count, not entry count.
+        # are the cache's memory, so it is bounded by retained Action count (plus 1 per key),
+        # not entry count.
         self._expansion_cache: Dict[
             Tuple[Any, ...], Dict[str, Set[Action]]
-        ] = CircuitBreakerCache(
-            CACHE_MAX_RETAINED_ACTIONS,
-            weigh=lambda v: sum(len(s) for s in v.values()),
+        ] = CappedMemoCache(
+            CACHE_MAX_WEIGHT,
+            weigh=lambda v: 1 + sum(len(s) for s in v.values()),
             name="iam_ape expansion cache",
         )
 
