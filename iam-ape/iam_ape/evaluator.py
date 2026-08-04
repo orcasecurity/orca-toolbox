@@ -1,4 +1,3 @@
-import json
 import logging
 from collections import defaultdict
 from dataclasses import replace
@@ -517,10 +516,29 @@ class EffectivePolicyEvaluator:
         def action_to_service(action: str) -> str:
             return action.split(":")[0]
 
-        def serialize_set(obj):
-            if isinstance(obj, set):
-                return list(obj)
-            return obj
+        def _finalize(obj: Any) -> None:
+            # In-place finalize, replacing a json.loads(json.dumps(...)) round-trip. The upload
+            # path's json handler str()s sets (writing a Python repr, not a JSON array), so the
+            # source / denied_by / NotResource sets MUST become lists here; sets stay sets during
+            # the build above for dedup and are converted only now. Done in place (not by
+            # building a copy) so the peak holds one structure, not the original + a ~330 MB
+            # string + a parallel copy. defaultdict factories are cleared so the report reads
+            # like the plain dict the round-trip produced (no auto-vivification on a missing key);
+            # HashableDict/HashableList conditions are left as-is (they serialize as dict/list).
+            if isinstance(obj, dict):
+                if isinstance(obj, defaultdict):
+                    obj.default_factory = None
+                for key, value in obj.items():
+                    if isinstance(value, set):
+                        obj[key] = list(value)
+                    else:
+                        _finalize(value)
+            elif isinstance(obj, list):
+                for i, value in enumerate(obj):
+                    if isinstance(value, set):
+                        obj[i] = list(value)
+                    else:
+                        _finalize(value)
 
         """
         {
@@ -641,7 +659,7 @@ class EffectivePolicyEvaluator:
                     action_tuple.action
                 ]["denied_by"].add(action_tuple.denied_by)
 
-        res = json.loads(json.dumps(res, default=serialize_set))
+        _finalize(res)
 
         return res
 
