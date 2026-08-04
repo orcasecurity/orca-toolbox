@@ -28,47 +28,15 @@ logger = logging.getLogger("IAM-APE:evaluator")
 def should_deny(
     iam_action: Action,
     denied_actions: Dict[str, Set[Action]],
-    merge_cache: Optional[Dict[Any, Any]] = None,
-    result_cache: Optional[Dict[Any, Any]] = None,
-) -> Tuple[bool, Set[Action], Optional[str]]:
-    # result_cache memoizes the deny decision per action; safe only for the account-fixed
-    # SCP denied-set, whose effect is identical across every entity.
-    if result_cache is None:
-        return _should_deny_impl(iam_action, denied_actions, merge_cache)
-    cached = result_cache.get(iam_action)
-    if cached is not None:
-        return cached
-    result = _should_deny_impl(iam_action, denied_actions, merge_cache)
-    result_cache[iam_action] = result
-    return result
-
-
-def _should_deny_impl(
-    iam_action: Action,
-    denied_actions: Dict[str, Set[Action]],
-    merge_cache: Optional[Dict[Any, Any]] = None,
 ) -> Tuple[bool, Set[Action], Optional[str]]:
     """
     Check if an action is denied by a list of denied actions
     :param iam_action:
     :param denied_actions:
-    :param merge_cache: optional condition-merge cache, keyed by content; safe to share.
     :return: denied, partially_denied_actions, source
     """
     res = set()
     partially_denied = False
-
-    def _merge(
-        allow_cond: Optional[Dict[str, Any]], deny_cond: Optional[Dict[str, Any]]
-    ) -> Any:
-        if merge_cache is None:
-            return merge_condition(allow_cond, deny_cond)
-        key = (allow_cond, deny_cond, True)
-        if key in merge_cache:
-            return merge_cache[key]
-        merged = merge_condition(allow_cond, deny_cond)
-        merge_cache[key] = merged
-        return merged
 
     for denied_action in denied_actions.get(iam_action.action, []):
 
@@ -87,7 +55,7 @@ def _should_deny_impl(
                             action=iam_action.action,
                             resource=iam_action.resource,
                             not_resource=None,
-                            condition=_merge(
+                            condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
                             source=iam_action.source,
@@ -104,7 +72,7 @@ def _should_deny_impl(
                             action=iam_action.action,
                             resource=iam_action.resource,
                             not_resource=None,
-                            condition=_merge(
+                            condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
                             source=iam_action.source,
@@ -121,7 +89,7 @@ def _should_deny_impl(
                             if iam_action.resource == PolicyElement.WILDCARD
                             else iam_action.resource,
                             not_resource=denied_action.resource,
-                            condition=_merge(
+                            condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
                             source=iam_action.source,
@@ -136,7 +104,7 @@ def _should_deny_impl(
                             if iam_action.resource == PolicyElement.WILDCARD
                             else iam_action.resource,
                             not_resource=denied_action.resource,
-                            condition=_merge(
+                            condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
                             source=iam_action.source,
@@ -159,7 +127,7 @@ def _should_deny_impl(
                             action=iam_action.action,
                             resource=denied_action.not_resource,
                             not_resource=iam_action.not_resource,
-                            condition=_merge(
+                            condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
                             source=iam_action.source,
@@ -184,7 +152,7 @@ def _should_deny_impl(
                             action=iam_action.action,
                             resource=iam_action.resource,
                             not_resource=denied_action.resource,
-                            condition=_merge(
+                            condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
                             source=iam_action.source,
@@ -197,7 +165,7 @@ def _should_deny_impl(
                             action=iam_action.action,
                             resource=iam_action.resource,
                             not_resource=denied_action.resource,
-                            condition=_merge(
+                            condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
                             source=iam_action.source,
@@ -214,7 +182,7 @@ def _should_deny_impl(
                             action=iam_action.action,
                             resource=None,
                             not_resource=iam_action.not_resource,
-                            condition=_merge(
+                            condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
                             source=iam_action.source,
@@ -233,7 +201,7 @@ def _should_deny_impl(
                             action=iam_action.action,
                             resource=iam_action.resource,
                             not_resource=denied_action.not_resource,
-                            condition=_merge(
+                            condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
                             source=iam_action.source,
@@ -246,7 +214,7 @@ def _should_deny_impl(
                             action=iam_action.action,
                             resource=denied_action.not_resource,
                             not_resource=iam_action.not_resource,
-                            condition=_merge(
+                            condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
                             source=iam_action.source,
@@ -260,16 +228,22 @@ def _should_deny_impl(
 
 def explicitly_deny(
     permissions: PermissionsContainer,
-    merge_cache: Optional[Dict[Any, Any]] = None,
     result_cache: Optional[Dict[Any, Any]] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
+    # result_cache memoizes the deny decision per action; safe only for the account-fixed
+    # SCP denied-set, whose effect is identical across every entity.
     final_actions_dict: Dict[str, Set[Action]] = defaultdict(set)
     ineffective_permissions: Set[IneffectiveAction] = set()
     for action_key, action_values in permissions.allowed_permissions.items():
         for action_value in action_values:
-            denied, new_action_values, denied_by = should_deny(
-                action_value, permissions.denied_permissions, merge_cache, result_cache
-            )
+            if result_cache is not None and action_value in result_cache:
+                denied, new_action_values, denied_by = result_cache[action_value]
+            else:
+                denied, new_action_values, denied_by = should_deny(
+                    action_value, permissions.denied_permissions
+                )
+                if result_cache is not None:
+                    result_cache[action_value] = (denied, new_action_values, denied_by)
             if not denied:
                 final_actions_dict[action_key].update(new_action_values)
             elif denied_by:
@@ -499,7 +473,6 @@ def apply_permission_boundary(
             allowed_permissions=new_allow_actions,
             denied_permissions=permission_boundary.denied_permissions,
         ),
-        merge_cache,
         deny_result_cache,
     )
     ineffective_permissions.update(denied_ineffective)
@@ -750,9 +723,7 @@ class EffectivePolicyEvaluator:
         permission_boundary = self.get_permission_boundary(entity_obj)
 
         merge_cache = self._deny_merge_cache
-        final_permissions, ineffective_permissions = explicitly_deny(
-            direct_permissions, merge_cache
-        )
+        final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
         denied_permissions = direct_permissions.denied_permissions
         for boundary in (permission_boundary, self.scp_policy):

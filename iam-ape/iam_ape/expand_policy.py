@@ -238,6 +238,14 @@ class PolicyExpander:
             cached = self._expansion_cache.get(cache_key)
             if cached is not None:
                 return cached
+        res = self._expand_action(iam_action)
+        if cache_key is not None:
+            result = dict(res)
+            self._expansion_cache[cache_key] = result
+            return result
+        return res
+
+    def _expand_action(self, iam_action: Action) -> Dict[str, Set[Action]]:
         res: Dict[str, Set[Action]] = defaultdict(set)
         try:
             if iam_action.action == PolicyElement.WILDCARD:  # {"Action": ["*"]}
@@ -278,11 +286,6 @@ class PolicyExpander:
                 )
         except KeyError:  # not a valid action
             logger.debug(f"Got an invalid action: {iam_action.action}")
-
-        if cache_key is not None:
-            result = dict(res)
-            self._expansion_cache[cache_key] = result
-            return result
         return res
 
     def expand_not_action(
@@ -301,38 +304,42 @@ class PolicyExpander:
             cached = self._expansion_cache.get(cache_key)
             if cached is not None:
                 return cached
+        res = self._expand_not_action(notactions, statement, sid)
+        if cache_key is not None:
+            result = dict(res)
+            self._expansion_cache[cache_key] = result
+            return result
+        return res
+
+    def _expand_not_action(
+        self, notactions: List[str], statement: AwsPolicyStatementType, sid: str
+    ) -> Dict[str, Set[Action]]:
         res: Dict[str, Set[Action]] = defaultdict(set)
         if any(
             [notaction == PolicyElement.WILDCARD for notaction in notactions]
         ):  # {"NotAction": ["*"]}
             # This is here as a safeguard. No sane person should write a policy like this. It has no effect.
-            pass
-        else:  # {"NotAction": ["ec2:*", "iam:Get*", "sts:GetCallerIdentity"]}
-            for iam_service, action_dicts in self.all_iam_actions.items():
-                for action in action_dicts.keys():
-                    curr_action = f"{iam_service}:{action}"
-                    curr_action_lower = curr_action.lower()
-                    if any(
-                        [
-                            wildcard_match(curr_action_lower, not_action.lower())
-                            for not_action in notactions
-                        ]
-                    ):
-                        continue
-                    _append_action(
-                        res=res,
-                        action=curr_action,
-                        service=iam_service,
-                        resources=statement.get(PolicyElement.RESOURCE),
-                        not_resources=statement.get(PolicyElement.NOTRESOURCE),
-                        condition=statement.get(PolicyElement.CONDITION),
-                        source=sid,
-                    )
-
-        if cache_key is not None:
-            result = dict(res)
-            self._expansion_cache[cache_key] = result
-            return result
+            return res
+        for iam_service, action_dicts in self.all_iam_actions.items():
+            for action in action_dicts.keys():
+                curr_action = f"{iam_service}:{action}"
+                curr_action_lower = curr_action.lower()
+                if any(
+                    [
+                        wildcard_match(curr_action_lower, not_action.lower())
+                        for not_action in notactions
+                    ]
+                ):
+                    continue
+                _append_action(
+                    res=res,
+                    action=curr_action,
+                    service=iam_service,
+                    resources=statement.get(PolicyElement.RESOURCE),
+                    not_resources=statement.get(PolicyElement.NOTRESOURCE),
+                    condition=statement.get(PolicyElement.CONDITION),
+                    source=sid,
+                )
         return res
 
     def get_action_access_levels(self, action: str) -> List[str]:
