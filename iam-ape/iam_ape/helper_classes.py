@@ -13,16 +13,11 @@ from iam_ape.helper_types import (
 
 logger = logging.getLogger("IAM-APE:cache")
 
-# Per-cache size ceilings (retained-Action count at which a cache stops accepting new keys).
-# Sized from the MEASURED transitive footprint of what each cache retains (tracemalloc), because
-# per-Action bytes vary ~6x with the condition: a condition-free expansion Action is ~300 B, but
-# a deny Action carrying a *distinct* merged condition (a HashableDict) is ~1.8 KB — so an
-# Action-count cap that ignores this lets the deny cache reach ~1.8 GB at 1 M entries (the +1.6 GB
-# seen on btg). Each is sized to ~300 MB, so the two caches together retain ~0.6 GB — a fraction
-# of the clouder pod, not the ~2 GB a condition-blind cap allowed. Reaching a cap degrades that
-# cache to uncached, never the scan to failure. Tune against measured hit-rate-vs-cap.
+# Size ceiling for the expansion cache (retained-Action count at which it stops accepting new
+# keys). Sized from the MEASURED transitive footprint (tracemalloc): a condition-free expansion
+# Action is ~300 B, so 1 M entries is ~300 MB — a fraction of the clouder pod. Reaching the cap
+# degrades the cache to uncached, never the scan to failure. Tune against measured hit-rate-vs-cap.
 EXPANSION_CACHE_MAX_WEIGHT = 1_000_000  # ~300 MB at ~300 B / condition-free Action
-DENY_CACHE_MAX_WEIGHT = 170_000  # ~300 MB at ~1.8 KB / condition-bearing Action
 
 
 class CappedMemoCache(dict):
@@ -33,11 +28,11 @@ class CappedMemoCache(dict):
     shared early entries stay cached. Deliberately not clear-on-overflow, which would repeatedly
     discard those hot entries and pay to rebuild them (measured ~+18% wall on btg).
 
-    ``weigh`` maps a value to its weight; entries are weighed at least 1 so zero-retention
-    entries (pass-through sentinels, full denies) are still bounded by key count. Callers insert
-    each key once and never overwrite, so the counter is monotonic (add-on-accepted-insert, reset
-    only by clear()); an overwrite would leave it unchanged — a benign under-count the insert-once
-    contract rules out. Reaching the cap is logged once (the account is running partially uncached)."""
+    ``weigh`` maps a value to its weight (default 1 = entry count; the expansion cache weighs by
+    retained Action count so a cap bounds bytes, not entries). Callers insert each key once and
+    never overwrite, so the counter is monotonic (add-on-accepted-insert, reset only by clear());
+    an overwrite would leave it unchanged — a benign under-count the insert-once contract rules
+    out. Reaching the cap is logged once (the account is running partially uncached)."""
 
     def __init__(
         self,

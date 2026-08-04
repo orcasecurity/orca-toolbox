@@ -2,14 +2,8 @@ import copy
 import json
 import os
 
-from iam_ape.evaluator import (
-    _PASSTHROUGH,
-    AuthorizationDetails,
-    EffectivePolicyEvaluator,
-    _cached_deny_verdict,
-)
+from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.helper_classes import (
-    Action,
     CappedMemoCache,
     HashableDict,
     HashableList,
@@ -390,30 +384,6 @@ def test_shrink_does_not_mutate_shared_scp() -> None:
     ), "shrink_policy mutated the shared scp_policy in place"
 
 
-def _action_view(action):
-    return (
-        action.action,
-        action.resource,
-        action.not_resource,
-        _canonical(action.condition) if action.condition else None,
-        action.source,
-    )
-
-
-def _perm_view(res):
-    """Order-independent view of a result that keeps `source` — so a deny-cache re-stamp
-    error (returning the wrong principal's source) shows up as a mismatch."""
-    allowed = sorted(
-        (_action_view(a) for s in res.allowed_permissions.values() for a in s),
-        key=repr,
-    )
-    ineffective = sorted(
-        ((_action_view(a), a.denied_by) for a in res.ineffective_permissions),
-        key=repr,
-    )
-    return allowed, ineffective
-
-
 def _managed_policy(arn: str, doc: dict) -> dict:
     return {
         "PolicyName": arn.rsplit("/", 1)[-1],
@@ -438,85 +408,6 @@ def _role_with_managed(name: str, mp_arn: str) -> dict:
         "RolePolicyList": [],
         "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": []},
     }
-
-
-def test_deny_cache_source_strip_matches_uncached() -> None:
-    """The SCP deny cache keys on (action, resource, not_resource, condition) without source
-    and re-stamps the caller's source on retrieval. Principals attaching *different* managed
-    policies (distinct sources) that grant the *same* actions collide on that key, so this
-    proves the shared, source-stripped cache reproduces exactly what a fresh per-principal
-    evaluator computes — including the source stamped on every allowed/ineffective action."""
-    grant_doc = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Action": ["s3:GetObject", "s3:PutObject", "ec2:DescribeInstances"],
-                "Resource": ["*"],
-            }
-        ],
-    }
-    mp_arns = [f"arn:aws:iam::123456789012:policy/mp{i}" for i in range(3)]
-    names = ["R0", "R1", "R2"]
-    auth_data = {
-        "RoleDetailList": [
-            _role_with_managed(n, arn) for n, arn in zip(names, mp_arns)
-        ],
-        "UserDetailList": [],
-        "GroupDetailList": [],
-        # Distinct ARNs, byte-identical content -> same stripped key, different source.
-        "Policies": [_managed_policy(arn, grant_doc) for arn in mp_arns],
-    }
-    # Conditional Deny on s3:* -> s3 actions are *partially* denied (condition merged, exercising
-    # the re-stamp path); ec2 is untouched (exercising the pass-through sentinel).
-    deny_scp = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Deny",
-                "Action": ["s3:*"],
-                "Resource": ["*"],
-                "Condition": {"StringEquals": {"aws:RequestedRegion": ["us-east-1"]}},
-            }
-        ],
-    }
-    full_access = {
-        "Version": "2012-10-17",
-        "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
-    }
-
-    def scps() -> list:
-        return [
-            PolicyWithSource("p-FullAWSAccess", copy.deepcopy(full_access)),
-            PolicyWithSource("p-deny", copy.deepcopy(deny_scp)),
-        ]
-
-    arns = [f"arn:aws:iam::123456789012:role/{n}" for n in names]
-    auth = AuthorizationDetails(auth_data)
-
-    standalone = {
-        arn: _perm_view(
-            EffectivePolicyEvaluator(auth, scps()).evaluate(
-                arn=arn, entity_type=EntityType.role
-            )
-        )
-        for arn in arns
-    }
-    shared_evaluator = EffectivePolicyEvaluator(auth, scps())
-    shared = {
-        arn: _perm_view(shared_evaluator.evaluate(arn=arn, entity_type=EntityType.role))
-        for arn in arns
-    }
-
-    for arn in arns:
-        assert shared[arn] == standalone[arn], f"{arn} deny-cache result diverged"
-
-    # Both cache branches must actually have been exercised, else the test proves nothing.
-    cache = shared_evaluator._scp_deny_result_cache
-    assert any(v is _PASSTHROUGH for v in cache.values()), "sentinel path not exercised"
-    assert any(
-        v is not _PASSTHROUGH for v in cache.values()
-    ), "re-stamp path not exercised"
 
 
 def test_capped_memo_cache_stops_inserting_at_cap() -> None:
@@ -545,29 +436,6 @@ def test_capped_memo_cache_stops_inserting_at_cap() -> None:
     assert len(cache) == 0
     assert cache._weight == 0
     assert cache._capped is False
-
-
-def test_deny_cache_guard_skips_when_source_is_a_denied_source() -> None:
-    """The source-stripped key is sound only where should_deny's exact-equality shortcut cannot
-    fire — i.e. the action's source is not one of that action's denied sources. When it IS, the
-    guard must refuse to cache; otherwise a later principal could hit an entry whose verdict was
-    source-specific. This is the entire soundness argument for the stripped key, so pin it."""
-    denied = {"s3:GetObject": {Action("s3:GetObject", "*", None, None, "p-deny")}}
-    denied_sources = {"s3:GetObject": frozenset({"p-deny"})}
-
-    # source is NOT a denied source -> safe to cache
-    safe = Action(
-        "s3:GetObject", "*", None, None, "arn:aws:iam::123456789012:policy/mp"
-    )
-    cache: dict = {}
-    _cached_deny_verdict(safe, denied, cache, denied_sources)
-    assert len(cache) == 1, "a non-colliding source must be cached"
-
-    # source IS a denied source -> the equality shortcut can fire; guard must NOT cache
-    colliding = Action("s3:GetObject", "*", None, None, "p-deny")
-    guarded: dict = {}
-    _cached_deny_verdict(colliding, denied, guarded, denied_sources)
-    assert guarded == {}, "guard must not cache when the source is a denied source"
 
 
 def test_cache_stats_reports_live_cache_weight() -> None:
@@ -603,7 +471,7 @@ def test_cache_stats_reports_live_cache_weight() -> None:
     )
 
     stats = evaluator.cache_stats()
-    assert set(stats) == {"expansion", "scp_deny", "merge"}
+    assert set(stats) == {"expansion", "merge"}
     for cache_stat in stats.values():
         assert isinstance(cache_stat["entries"], int)
         assert isinstance(cache_stat["weight"], int)

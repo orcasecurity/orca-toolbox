@@ -2,13 +2,12 @@ import json
 import logging
 from collections import defaultdict
 from dataclasses import replace
-from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Set, Tuple, cast
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, cast
 
 from iam_ape.consts import PolicyElement
 from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
 from iam_ape.expand_policy import PolicyExpander
 from iam_ape.helper_classes import (
-    DENY_CACHE_MAX_WEIGHT,
     Action,
     CappedMemoCache,
     IneffectiveAction,
@@ -28,8 +27,7 @@ logger = logging.getLogger("IAM-APE:evaluator")
 
 
 def should_deny(
-    iam_action: Action,
-    denied_actions: Dict[str, Set[Action]],
+    iam_action: Action, denied_actions: Dict[str, Set[Action]]
 ) -> Tuple[bool, Set[Action], Optional[str]]:
     """
     Check if an action is denied by a list of denied actions
@@ -228,70 +226,15 @@ def should_deny(
     return False, {iam_action}, None
 
 
-# should_deny returned (False, {iam_action}, None) — the dominant "not denied" verdict.
-# Stored as a sentinel so those cache entries retain no Action objects.
-_PASSTHROUGH = object()
-
-
-def _cached_deny_verdict(
-    action_value: Action,
-    denied_permissions: Dict[str, Set[Action]],
-    result_cache: Optional[Dict[Any, Any]],
-    denied_sources: Optional[Dict[str, FrozenSet[str]]],
-) -> Tuple[bool, Set[Action], Optional[str]]:
-    # should_deny with the account-fixed SCP result cache applied. The key drops `source` so
-    # principals attaching different policies share entries: should_deny's verdict depends on
-    # source only through its `iam_action == denied_action` exact-equality shortcut, which
-    # cannot fire when the action's source isn't among that action's denied sources
-    # (`denied_sources`). Retrieved sets are re-stamped with the caller's source; `denied_by`
-    # is the denied side's, so it needs none. The dominant not-denied verdict is stored as a
-    # zero-Action sentinel. Without `denied_sources` (guard indeterminate) the entry is skipped.
-    cache_key = None
-    if (
-        result_cache is not None
-        and denied_sources is not None
-        and action_value.source
-        not in denied_sources.get(action_value.action, frozenset())
-    ):
-        cache_key = (
-            action_value.action,
-            action_value.resource,
-            action_value.not_resource,
-            action_value.condition,
-        )
-    if cache_key is not None and result_cache is not None and cache_key in result_cache:
-        cached = result_cache[cache_key]
-        if cached is _PASSTHROUGH:
-            return False, {action_value}, None
-        denied, stored_values, denied_by = cached
-        return (
-            denied,
-            {replace(a, source=action_value.source) for a in stored_values},
-            denied_by,
-        )
-    denied, new_action_values, denied_by = should_deny(action_value, denied_permissions)
-    if cache_key is not None and result_cache is not None:
-        if not denied and denied_by is None and new_action_values == {action_value}:
-            result_cache[cache_key] = _PASSTHROUGH
-        else:
-            result_cache[cache_key] = (denied, new_action_values, denied_by)
-    return denied, new_action_values, denied_by
-
-
 def explicitly_deny(
     permissions: PermissionsContainer,
-    result_cache: Optional[Dict[Any, Any]] = None,
-    denied_sources: Optional[Dict[str, FrozenSet[str]]] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     final_actions_dict: Dict[str, Set[Action]] = defaultdict(set)
     ineffective_permissions: Set[IneffectiveAction] = set()
     for action_key, action_values in permissions.allowed_permissions.items():
         for action_value in action_values:
-            denied, new_action_values, denied_by = _cached_deny_verdict(
-                action_value,
-                permissions.denied_permissions,
-                result_cache,
-                denied_sources,
+            denied, new_action_values, denied_by = should_deny(
+                action_value, permissions.denied_permissions
             )
             if not denied:
                 final_actions_dict[action_key].update(new_action_values)
@@ -314,8 +257,6 @@ def apply_permission_boundary(
     allow_actions: Dict[str, Set[Action]],
     permission_boundary: PermissionsContainer,
     merge_cache: Optional[Dict[Any, Any]] = None,
-    deny_result_cache: Optional[Dict[Any, Any]] = None,
-    deny_sources: Optional[Dict[str, FrozenSet[str]]] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     def permit(at: Action, bt: Action) -> Action:
         if merge_cache is None:
@@ -522,9 +463,7 @@ def apply_permission_boundary(
         PermissionsContainer(
             allowed_permissions=new_allow_actions,
             denied_permissions=permission_boundary.denied_permissions,
-        ),
-        deny_result_cache,
-        deny_sources,
+        )
     )
     ineffective_permissions.update(denied_ineffective)
     return allowed, ineffective_permissions
@@ -564,33 +503,19 @@ class EffectivePolicyEvaluator:
             if scp_policies
             else PermissionsContainer()
         )
-        # Account-fixed SCP deny caches, shared across principals within one account scan.
-        # Capped so a large account cannot grow them toward OOM: the deny cache is weighed by
-        # retained Action count (its Set[Action] values, not its key count, are the memory) plus
-        # 1 per key so zero-retention entries (sentinels, full denies) are still bounded; the
-        # small merge cache by entry count.
-        self._deny_merge_cache: Dict[Any, Any] = CappedMemoCache(
-            200_000, name="iam_ape merge cache"
+        # Memoizes merge_condition over the (small, shared) permission-boundary / SCP condition
+        # pairs across principals. Cutting that allocation churn is what bounds peak RSS. Bounded
+        # by entry count so a pathological account cannot grow it without limit.
+        self._condition_merge_cache: Dict[Any, Any] = CappedMemoCache(
+            200_000, name="iam_ape condition merge cache"
         )
-        self._scp_deny_result_cache: Dict[Any, Any] = CappedMemoCache(
-            DENY_CACHE_MAX_WEIGHT,
-            weigh=lambda v: 1 if v is _PASSTHROUGH else 1 + len(v[1]),
-            name="iam_ape SCP deny cache",
-        )
-        # Sources of each action's SCP deny statements — lets the deny cache key drop
-        # `source` wherever should_deny's exact-equality shortcut provably cannot fire.
-        self._scp_denied_sources: Dict[str, FrozenSet[str]] = {
-            action: frozenset(a.source for a in actions)
-            for action, actions in self.scp_policy.denied_permissions.items()
-        }
 
     def cache_stats(self) -> Dict[str, Dict[str, Any]]:
         """Per-cache (entries, weight, capped) for memory diagnostics — log alongside RSS at a
         given principal count to see live cache footprint and whether a cap has been reached."""
         caches = {
             "expansion": self.policy_expander._expansion_cache,
-            "scp_deny": self._scp_deny_result_cache,
-            "merge": self._deny_merge_cache,
+            "merge": self._condition_merge_cache,
         }
         return {
             name: {
@@ -770,15 +695,6 @@ class EffectivePolicyEvaluator:
             else:
                 PolicyNotFoundException(f"Couldn't find policy {policy_arn}")
 
-    def _scp_caches_for(
-        self, boundary: PermissionsContainer
-    ) -> Tuple[Optional[Dict[Any, Any]], Optional[Dict[str, FrozenSet[str]]]]:
-        # The account-fixed SCP deny-set is identical across entities, so its deny decisions
-        # are cacheable; the per-entity permission boundary's are not.
-        if boundary is self.scp_policy:
-            return self._scp_deny_result_cache, self._scp_denied_sources
-        return None, None
-
     def get_permission_boundary(self, entity: Dict[str, Any]) -> PermissionsContainer:
         permissions = PermissionsContainer()
         if pb_arn := entity.get("PermissionsBoundary", {}).get(
@@ -815,24 +731,17 @@ class EffectivePolicyEvaluator:
         )
         permission_boundary = self.get_permission_boundary(entity_obj)
 
-        merge_cache = self._deny_merge_cache
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
         denied_permissions = direct_permissions.denied_permissions
         for boundary in (permission_boundary, self.scp_policy):
             if boundary.allowed_permissions or boundary.denied_permissions:
-                # merge_cache is shared across both boundaries (merge_condition is pure); the
-                # deny-result cache is gated to the account-fixed SCP (see _scp_caches_for).
-                deny_result_cache, deny_sources = self._scp_caches_for(boundary)
+                # The merge cache is shared across both boundaries (merge_condition is pure).
                 (
                     final_permissions,
                     more_ineffective_permissions,
                 ) = apply_permission_boundary(
-                    final_permissions,
-                    boundary,
-                    merge_cache,
-                    deny_result_cache,
-                    deny_sources,
+                    final_permissions, boundary, self._condition_merge_cache
                 )
                 ineffective_permissions.update(more_ineffective_permissions)
 
