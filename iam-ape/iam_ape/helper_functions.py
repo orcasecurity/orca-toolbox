@@ -1,3 +1,4 @@
+import functools
 import logging
 from fnmatch import fnmatch
 from typing import Any, Dict, List, Literal, Optional, Set, TypeVar
@@ -177,11 +178,11 @@ def negate_condition(condition: Dict[str, Any]) -> Dict[str, Any]:
     return {condition_key: condition_value}
 
 
-def merge_condition(
+def _merge_condition_impl(
     allow_cond: Optional[Dict[str, Any]],
     deny_cond: Optional[Dict[str, Any]],
-    negate: Optional[bool] = True,
-    hashable: Optional[bool] = True,
+    negate: Optional[bool],
+    hashable: Optional[bool],
 ) -> Optional[Dict[str, Any]]:
     res = None
 
@@ -201,6 +202,41 @@ def merge_condition(
             res = deny_cond
 
     return HashableDict.recursively(res) if hashable else res
+
+
+@functools.lru_cache(maxsize=100_000)
+def _merge_condition_memo(
+    allow_cond: Optional[HashableDict],
+    deny_cond: Optional[HashableDict],
+    negate: Optional[bool],
+) -> Optional[Dict[str, Any]]:
+    # Memoized hashable path of merge_condition. merge_condition is PURE in its arguments
+    # (deep_update / negate_condition both copy, neither mutates), so this cache is correct
+    # PROCESS-GLOBALLY: the same inputs give the same merged condition regardless of account.
+    # This is a deliberate exception to the per-account cache discipline used elsewhere in this
+    # library — it is only sound because the function is pure; maxsize bounds retention. The
+    # returned HashableDict is shared read-only across callers (the same sharing permit's cache
+    # already relied on). Only reached with both args HashableDict|None and hashable=True.
+    return _merge_condition_impl(allow_cond, deny_cond, negate, hashable=True)
+
+
+def merge_condition(
+    allow_cond: Optional[Dict[str, Any]],
+    deny_cond: Optional[Dict[str, Any]],
+    negate: Optional[bool] = True,
+    hashable: Optional[bool] = True,
+) -> Optional[Dict[str, Any]]:
+    # should_deny merges every allowed-action condition against the (fixed, few) SCP deny
+    # conditions, tens of millions of times with a tiny set of distinct inputs — so memoize the
+    # hashable path. Gated to HashableDict|None args (the create_json_report call passes
+    # hashable=False with possibly-plain-dict args, which would raise on hash and must bypass).
+    if (
+        hashable
+        and (allow_cond is None or isinstance(allow_cond, HashableDict))
+        and (deny_cond is None or isinstance(deny_cond, HashableDict))
+    ):
+        return _merge_condition_memo(allow_cond, deny_cond, negate)
+    return _merge_condition_impl(allow_cond, deny_cond, negate, hashable)
 
 
 def get_default_policy_for_managed_policy(

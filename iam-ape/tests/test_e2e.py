@@ -471,7 +471,7 @@ def test_cache_stats_reports_live_cache_weight() -> None:
     )
 
     stats = evaluator.cache_stats()
-    assert set(stats) == {"expansion", "merge"}
+    assert set(stats) == {"expansion"}
     for cache_stat in stats.values():
         assert isinstance(cache_stat["entries"], int)
         assert isinstance(cache_stat["weight"], int)

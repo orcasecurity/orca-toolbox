@@ -9,7 +9,6 @@ from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
 from iam_ape.expand_policy import PolicyExpander
 from iam_ape.helper_classes import (
     Action,
-    CappedMemoCache,
     IneffectiveAction,
     PermissionsContainer,
     PolicyWithSource,
@@ -256,18 +255,9 @@ def explicitly_deny(
 def apply_permission_boundary(
     allow_actions: Dict[str, Set[Action]],
     permission_boundary: PermissionsContainer,
-    merge_cache: Optional[Dict[Any, Any]] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     def permit(at: Action, bt: Action) -> Action:
-        if merge_cache is None:
-            cond = merge_condition(at.condition, bt.condition, negate=False)
-        else:
-            key = (at.condition, bt.condition, False)
-            if key in merge_cache:
-                cond = merge_cache[key]
-            else:
-                cond = merge_condition(at.condition, bt.condition, negate=False)
-                merge_cache[key] = cond
+        cond = merge_condition(at.condition, bt.condition, negate=False)
         return cast(Action, replace(at, condition=cond))
 
     def deny(at: Action, boundary_id: str) -> IneffectiveAction:
@@ -503,19 +493,12 @@ class EffectivePolicyEvaluator:
             if scp_policies
             else PermissionsContainer()
         )
-        # Memoizes merge_condition over the (small, shared) permission-boundary / SCP condition
-        # pairs across principals. Cutting that allocation churn is what bounds peak RSS. Bounded
-        # by entry count so a pathological account cannot grow it without limit.
-        self._condition_merge_cache: Dict[Any, Any] = CappedMemoCache(
-            200_000, name="iam_ape condition merge cache"
-        )
 
     def cache_stats(self) -> Dict[str, Dict[str, Any]]:
         """Per-cache (entries, weight, capped) for memory diagnostics — log alongside RSS at a
         given principal count to see live cache footprint and whether a cap has been reached."""
         caches = {
             "expansion": self.policy_expander._expansion_cache,
-            "merge": self._condition_merge_cache,
         }
         return {
             name: {
@@ -736,13 +719,10 @@ class EffectivePolicyEvaluator:
         denied_permissions = direct_permissions.denied_permissions
         for boundary in (permission_boundary, self.scp_policy):
             if boundary.allowed_permissions or boundary.denied_permissions:
-                # The merge cache is shared across both boundaries (merge_condition is pure).
                 (
                     final_permissions,
                     more_ineffective_permissions,
-                ) = apply_permission_boundary(
-                    final_permissions, boundary, self._condition_merge_cache
-                )
+                ) = apply_permission_boundary(final_permissions, boundary)
                 ineffective_permissions.update(more_ineffective_permissions)
 
                 denied_permissions = deep_update(
