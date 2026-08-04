@@ -2,7 +2,7 @@ import json
 import logging
 from collections import defaultdict
 from dataclasses import replace
-from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Set, Tuple, cast
 
 from iam_ape.consts import PolicyElement
 from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
@@ -233,66 +233,66 @@ def should_deny(
 _PASSTHROUGH = object()
 
 
+def _cached_deny_verdict(
+    action_value: Action,
+    denied_permissions: Dict[str, Set[Action]],
+    result_cache: Optional[Dict[Any, Any]],
+    denied_sources: Optional[Dict[str, FrozenSet[str]]],
+) -> Tuple[bool, Set[Action], Optional[str]]:
+    # should_deny with the account-fixed SCP result cache applied. The key drops `source` so
+    # principals attaching different policies share entries: should_deny's verdict depends on
+    # source only through its `iam_action == denied_action` exact-equality shortcut, which
+    # cannot fire when the action's source isn't among that action's denied sources
+    # (`denied_sources`). Retrieved sets are re-stamped with the caller's source; `denied_by`
+    # is the denied side's, so it needs none. The dominant not-denied verdict is stored as a
+    # zero-Action sentinel. Without `denied_sources` (guard indeterminate) the entry is skipped.
+    cache_key = None
+    if (
+        result_cache is not None
+        and denied_sources is not None
+        and action_value.source
+        not in denied_sources.get(action_value.action, frozenset())
+    ):
+        cache_key = (
+            action_value.action,
+            action_value.resource,
+            action_value.not_resource,
+            action_value.condition,
+        )
+    if cache_key is not None and result_cache is not None and cache_key in result_cache:
+        cached = result_cache[cache_key]
+        if cached is _PASSTHROUGH:
+            return False, {action_value}, None
+        denied, stored_values, denied_by = cached
+        return (
+            denied,
+            {replace(a, source=action_value.source) for a in stored_values},
+            denied_by,
+        )
+    denied, new_action_values, denied_by = should_deny(action_value, denied_permissions)
+    if cache_key is not None and result_cache is not None:
+        if not denied and denied_by is None and new_action_values == {action_value}:
+            result_cache[cache_key] = _PASSTHROUGH
+        else:
+            result_cache[cache_key] = (denied, new_action_values, denied_by)
+    return denied, new_action_values, denied_by
+
+
 def explicitly_deny(
     permissions: PermissionsContainer,
     result_cache: Optional[Dict[Any, Any]] = None,
     denied_sources: Optional[Dict[str, FrozenSet[str]]] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
-    # result_cache memoizes the deny decision per action; safe only for the account-fixed
-    # SCP denied-set, whose effect is identical across every entity. The key drops `source`
-    # so principals attaching different policies share entries: should_deny's verdict depends
-    # on source only through its `iam_action == denied_action` exact-equality shortcut, which
-    # cannot fire when the action's source isn't among that action's denied sources
-    # (`denied_sources`). Result sets are re-stamped with the caller's source on retrieval;
-    # `denied_by` is the denied side's source, so it needs none. Without `denied_sources`
-    # (guard indeterminate) the entry is skipped rather than shared.
     final_actions_dict: Dict[str, Set[Action]] = defaultdict(set)
     ineffective_permissions: Set[IneffectiveAction] = set()
     for action_key, action_values in permissions.allowed_permissions.items():
         for action_value in action_values:
-            cache_key = None
-            if (
-                result_cache is not None
-                and denied_sources is not None
-                and action_value.source
-                not in denied_sources.get(action_value.action, frozenset())
-            ):
-                cache_key = (
-                    action_value.action,
-                    action_value.resource,
-                    action_value.not_resource,
-                    action_value.condition,
-                )
-            if (
-                cache_key is not None
-                and result_cache is not None
-                and cache_key in result_cache
-            ):
-                cached = result_cache[cache_key]
-                if cached is _PASSTHROUGH:
-                    denied, new_action_values, denied_by = False, {action_value}, None
-                else:
-                    denied, stored_values, denied_by = cached
-                    new_action_values = {
-                        replace(a, source=action_value.source) for a in stored_values
-                    }
-            else:
-                denied, new_action_values, denied_by = should_deny(
-                    action_value, permissions.denied_permissions
-                )
-                if cache_key is not None and result_cache is not None:
-                    if (
-                        not denied
-                        and denied_by is None
-                        and new_action_values == {action_value}
-                    ):
-                        result_cache[cache_key] = _PASSTHROUGH
-                    else:
-                        result_cache[cache_key] = (
-                            denied,
-                            new_action_values,
-                            denied_by,
-                        )
+            denied, new_action_values, denied_by = _cached_deny_verdict(
+                action_value,
+                permissions.denied_permissions,
+                result_cache,
+                denied_sources,
+            )
             if not denied:
                 final_actions_dict[action_key].update(new_action_values)
             elif denied_by:
@@ -327,7 +327,7 @@ def apply_permission_boundary(
             else:
                 cond = merge_condition(at.condition, bt.condition, negate=False)
                 merge_cache[key] = cond
-        return replace(at, condition=cond)
+        return cast(Action, replace(at, condition=cond))
 
     def deny(at: Action, boundary_id: str) -> IneffectiveAction:
         return IneffectiveAction(
@@ -752,6 +752,15 @@ class EffectivePolicyEvaluator:
             else:
                 PolicyNotFoundException(f"Couldn't find policy {policy_arn}")
 
+    def _scp_caches_for(
+        self, boundary: PermissionsContainer
+    ) -> Tuple[Optional[Dict[Any, Any]], Optional[Dict[str, FrozenSet[str]]]]:
+        # The account-fixed SCP deny-set is identical across entities, so its deny decisions
+        # are cacheable; the per-entity permission boundary's are not.
+        if boundary is self.scp_policy:
+            return self._scp_deny_result_cache, self._scp_denied_sources
+        return None, None
+
     def get_permission_boundary(self, entity: Dict[str, Any]) -> PermissionsContainer:
         permissions = PermissionsContainer()
         if pb_arn := entity.get("PermissionsBoundary", {}).get(
@@ -794,12 +803,9 @@ class EffectivePolicyEvaluator:
         denied_permissions = direct_permissions.denied_permissions
         for boundary in (permission_boundary, self.scp_policy):
             if boundary.allowed_permissions or boundary.denied_permissions:
-                # merge_cache is shared across both boundaries (merge_condition is pure in its
-                # args). The deny-result cache is gated to the account-fixed SCP, whose deny-set
-                # is identical across entities; the per-entity boundary's is not cacheable.
-                is_scp = boundary is self.scp_policy
-                deny_result_cache = self._scp_deny_result_cache if is_scp else None
-                deny_sources = self._scp_denied_sources if is_scp else None
+                # merge_cache is shared across both boundaries (merge_condition is pure); the
+                # deny-result cache is gated to the account-fixed SCP (see _scp_caches_for).
+                deny_result_cache, deny_sources = self._scp_caches_for(boundary)
                 (
                     final_permissions,
                     more_ineffective_permissions,
