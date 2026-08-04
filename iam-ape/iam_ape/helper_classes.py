@@ -13,12 +13,16 @@ from iam_ape.helper_types import (
 
 logger = logging.getLogger("IAM-APE:cache")
 
-# Hard weight ceiling for the per-account Set[Action]-valued caches (deny/expansion): roughly
-# the retained Action count at which a cache stops accepting new keys. On a large account (btg)
-# this is reached inside the working set, so it must degrade gracefully rather than thrash — see
-# CappedMemoCache. Each cache carries its own budget, so the combined ceiling is 2x this. Tune
-# against measured hit-rate-vs-cap; ~1 M weight is ~100-250 MB per cache.
-CACHE_MAX_WEIGHT = 1_000_000
+# Per-cache size ceilings (retained-Action count at which a cache stops accepting new keys).
+# Sized from the MEASURED transitive footprint of what each cache retains (tracemalloc), because
+# per-Action bytes vary ~6x with the condition: a condition-free expansion Action is ~300 B, but
+# a deny Action carrying a *distinct* merged condition (a HashableDict) is ~1.8 KB — so an
+# Action-count cap that ignores this lets the deny cache reach ~1.8 GB at 1 M entries (the +1.6 GB
+# seen on btg). Each is sized to ~300 MB, so the two caches together retain ~0.6 GB — a fraction
+# of the clouder pod, not the ~2 GB a condition-blind cap allowed. Reaching a cap degrades that
+# cache to uncached, never the scan to failure. Tune against measured hit-rate-vs-cap.
+EXPANSION_CACHE_MAX_WEIGHT = 1_000_000  # ~300 MB at ~300 B / condition-free Action
+DENY_CACHE_MAX_WEIGHT = 170_000  # ~300 MB at ~1.8 KB / condition-bearing Action
 
 
 class CappedMemoCache(dict):

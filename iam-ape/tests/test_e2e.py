@@ -568,3 +568,43 @@ def test_deny_cache_guard_skips_when_source_is_a_denied_source() -> None:
     guarded: dict = {}
     _cached_deny_verdict(colliding, denied, guarded, denied_sources)
     assert guarded == {}, "guard must not cache when the source is a denied source"
+
+
+def test_cache_stats_reports_live_cache_weight() -> None:
+    """cache_stats() exposes per-cache entries/weight/capped so a caller can log the live cache
+    footprint next to RSS — the number that tells whether a cap is bounding what actually grows."""
+    grant_doc = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": ["*"]}
+        ],
+    }
+    mp_arn = "arn:aws:iam::123456789012:policy/mp"
+    auth = AuthorizationDetails(
+        {
+            "RoleDetailList": [_role_with_managed("R0", mp_arn)],
+            "UserDetailList": [],
+            "GroupDetailList": [],
+            "Policies": [_managed_policy(mp_arn, grant_doc)],
+        }
+    )
+    scps = [
+        PolicyWithSource(
+            "p-FullAWSAccess",
+            {
+                "Version": "2012-10-17",
+                "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+            },
+        )
+    ]
+    evaluator = EffectivePolicyEvaluator(auth, scps)
+    evaluator.evaluate(
+        arn="arn:aws:iam::123456789012:role/R0", entity_type=EntityType.role
+    )
+
+    stats = evaluator.cache_stats()
+    assert set(stats) == {"expansion", "scp_deny", "merge"}
+    for cache_stat in stats.values():
+        assert isinstance(cache_stat["entries"], int)
+        assert isinstance(cache_stat["weight"], int)
+        assert cache_stat["capped"] is False

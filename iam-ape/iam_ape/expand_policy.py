@@ -13,7 +13,7 @@ from requests.structures import CaseInsensitiveDict
 from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
 from iam_ape.exceptions import UnknownServiceExepction
 from iam_ape.helper_classes import (
-    CACHE_MAX_WEIGHT,
+    EXPANSION_CACHE_MAX_WEIGHT,
     Action,
     CappedMemoCache,
     HashableDict,
@@ -164,7 +164,7 @@ class PolicyExpander:
         self._expansion_cache: Dict[
             Tuple[Any, ...], Dict[str, Set[Action]]
         ] = CappedMemoCache(
-            CACHE_MAX_WEIGHT,
+            EXPANSION_CACHE_MAX_WEIGHT,
             weigh=lambda v: 1 + sum(len(s) for s in v.values()),
             name="iam_ape expansion cache",
         )

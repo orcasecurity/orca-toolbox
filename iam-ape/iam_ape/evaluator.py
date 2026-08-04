@@ -8,7 +8,7 @@ from iam_ape.consts import PolicyElement
 from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
 from iam_ape.expand_policy import PolicyExpander
 from iam_ape.helper_classes import (
-    CACHE_MAX_WEIGHT,
+    DENY_CACHE_MAX_WEIGHT,
     Action,
     CappedMemoCache,
     IneffectiveAction,
@@ -573,7 +573,7 @@ class EffectivePolicyEvaluator:
             200_000, name="iam_ape merge cache"
         )
         self._scp_deny_result_cache: Dict[Any, Any] = CappedMemoCache(
-            CACHE_MAX_WEIGHT,
+            DENY_CACHE_MAX_WEIGHT,
             weigh=lambda v: 1 if v is _PASSTHROUGH else 1 + len(v[1]),
             name="iam_ape SCP deny cache",
         )
@@ -582,6 +582,23 @@ class EffectivePolicyEvaluator:
         self._scp_denied_sources: Dict[str, FrozenSet[str]] = {
             action: frozenset(a.source for a in actions)
             for action, actions in self.scp_policy.denied_permissions.items()
+        }
+
+    def cache_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Per-cache (entries, weight, capped) for memory diagnostics — log alongside RSS at a
+        given principal count to see live cache footprint and whether a cap has been reached."""
+        caches = {
+            "expansion": self.policy_expander._expansion_cache,
+            "scp_deny": self._scp_deny_result_cache,
+            "merge": self._deny_merge_cache,
+        }
+        return {
+            name: {
+                "entries": len(cache),
+                "weight": getattr(cache, "_weight", None),
+                "capped": getattr(cache, "_capped", None),
+            }
+            for name, cache in caches.items()
         }
 
     def create_json_report(
