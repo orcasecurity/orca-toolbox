@@ -528,11 +528,11 @@ class PolicyExpander:
         # but only when it actually holds a scalar (already-normalized conditions, the common
         # case, are left untouched). Action/resource lists are built fresh here, so safe.
         for statement in policy_res["Statement"]:
-            condition = statement.get(PolicyElement.CONDITION)
-            if condition is not None and any(
+            stmt_condition = statement.get(PolicyElement.CONDITION)
+            if stmt_condition is not None and any(
                 not isinstance(value, list)
-                for operator_dict in condition.values()
+                for operator_dict in stmt_condition.values()
                 for value in operator_dict.values()
             ):
-                statement[PolicyElement.CONDITION] = copy.deepcopy(condition)
+                statement[PolicyElement.CONDITION] = copy.deepcopy(stmt_condition)
         return normalize_policy(policy_res)
