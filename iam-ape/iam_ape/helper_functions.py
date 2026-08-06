@@ -222,7 +222,11 @@ def _merge_condition_memo(
 
 def reset_merge_condition_cache() -> None:
     """Clear the merge-condition memo. Called per EffectivePolicyEvaluator so the memo is
-    per-account (bounded, released at the account boundary) rather than accumulating process-wide."""
+    per-account (bounded, released at the account boundary) rather than accumulating process-wide.
+    Safe because the caller (clouder) dispatches account handlers sequentially — one live evaluator
+    at a time — so no concurrent evaluator's __init__ can wipe another's hot memo mid-scan. If that
+    ever changes (a second evaluator constructed while one is running), this becomes a perf cliff
+    (cold memo), not a correctness bug (the memo is pure)."""
     _merge_condition_memo.cache_clear()
 
 
