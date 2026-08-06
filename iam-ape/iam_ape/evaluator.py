@@ -514,7 +514,8 @@ class EffectivePolicyEvaluator:
             "entries": info.currsize,
             "hits": info.hits,
             "misses": info.misses,
-            "capped": info.currsize >= info.maxsize,
+            # maxsize is None for an unbounded lru_cache; an unbounded memo is never capped.
+            "capped": info.maxsize is not None and info.currsize >= info.maxsize,
         }
         return stats
 
