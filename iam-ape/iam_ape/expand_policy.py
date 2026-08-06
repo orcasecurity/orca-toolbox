@@ -1,4 +1,3 @@
-import copy
 import functools
 import json
 import logging
@@ -26,6 +25,16 @@ from iam_ape.helper_types import AwsPolicyStatementType, AwsPolicyType
 
 logger = logging.getLogger("policy expander")
 WORDSPLIT_RE = re.compile(r"(?<=.)(?=[A-Z])")
+
+
+def _to_plain(obj: Any) -> Any:
+    # Deep-copy a condition into plain dict/list (no HashableDict/HashableList), so the copy
+    # carries no memoized _hash that a later in-place mutation (normalize_policy) could leave stale.
+    if isinstance(obj, dict):
+        return {key: _to_plain(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_to_plain(value) for value in obj]
+    return obj
 
 
 class FrozenSetSet:
@@ -531,16 +540,21 @@ class PolicyExpander:
         else:
             policy_res["Statement"] = list(final_statements.values())
 
-        # normalize_policy rewrites scalar condition values into lists in place. A condition
-        # can be shared across principals via the caches, so copy it before that happens -
-        # but only when it actually holds a scalar (already-normalized conditions, the common
-        # case, are left untouched). Action/resource lists are built fresh here, so safe.
+        # normalize_policy rewrites scalar condition values into lists in place. A condition can
+        # be shared across principals via the caches, so copy it before that happens - but only
+        # when it actually holds a scalar (already-normalized conditions, the common case, are
+        # left untouched). The copy is into PLAIN dict/list via _to_plain, NOT deepcopy: a
+        # deepcopy'd HashableDict carries the original's memoized _hash, which normalize's mutation
+        # then leaves stale (equal conditions -> different hash buckets -> split statements). The
+        # isinstance(operator_dict, dict) guard mirrors the merge code above so a malformed
+        # (non-dict) operator value can't raise here and escape to the account-level handler.
         for statement in policy_res["Statement"]:
             stmt_condition = statement.get(PolicyElement.CONDITION)
             if stmt_condition is not None and any(
                 not isinstance(value, list)
                 for operator_dict in stmt_condition.values()
+                if isinstance(operator_dict, dict)
                 for value in operator_dict.values()
             ):
-                statement[PolicyElement.CONDITION] = copy.deepcopy(stmt_condition)
+                statement[PolicyElement.CONDITION] = _to_plain(stmt_condition)
         return normalize_policy(policy_res)

@@ -211,13 +211,23 @@ def _merge_condition_memo(
     negate: Optional[bool],
 ) -> Optional[Dict[str, Any]]:
     # Memoized hashable path of merge_condition. merge_condition is PURE in its arguments
-    # (deep_update / negate_condition both copy, neither mutates), so this cache is correct
-    # PROCESS-GLOBALLY: the same inputs give the same merged condition regardless of account.
-    # This is a deliberate exception to the per-account cache discipline used elsewhere in this
-    # library — it is only sound because the function is pure; maxsize bounds retention. The
-    # returned HashableDict is shared read-only across callers (the same sharing permit's cache
-    # already relied on). Only reached with both args HashableDict|None and hashable=True.
+    # (deep_update / negate_condition both copy, neither mutates), so a cache keyed on the inputs
+    # is correct regardless of account. Physically it is a module-global lru_cache, but
+    # EffectivePolicyEvaluator.__init__ calls reset_merge_condition_cache() so retention is bounded
+    # per account (its ~4 KB/entry merged conditions do not accumulate across accounts) and it is
+    # reported by cache_stats(). The returned HashableDict is shared read-only across callers (the
+    # same sharing permit's cache relied on). Only reached with both args HashableDict|None.
     return _merge_condition_impl(allow_cond, deny_cond, negate, hashable=True)
+
+
+def reset_merge_condition_cache() -> None:
+    """Clear the merge-condition memo. Called per EffectivePolicyEvaluator so the memo is
+    per-account (bounded, released at the account boundary) rather than accumulating process-wide."""
+    _merge_condition_memo.cache_clear()
+
+
+def merge_condition_cache_info() -> "functools._CacheInfo":
+    return _merge_condition_memo.cache_info()
 
 
 def merge_condition(

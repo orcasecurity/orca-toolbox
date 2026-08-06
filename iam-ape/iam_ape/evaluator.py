@@ -16,7 +16,9 @@ from iam_ape.helper_functions import (
     deep_update,
     get_default_policy_for_managed_policy,
     merge_condition,
+    merge_condition_cache_info,
     normalize_policy,
+    reset_merge_condition_cache,
     wildcard_match,
 )
 from iam_ape.helper_types import EntityType, FinalReportT
@@ -487,6 +489,9 @@ class EffectivePolicyEvaluator:
     ) -> None:
         self.auth_details = authorization_details
         self.policy_expander = policy_expander or PolicyExpander()
+        # The merge-condition memo is a module-global lru_cache; clear it here so its retention is
+        # per-account (released at the account boundary), not accumulated process-wide.
+        reset_merge_condition_cache()
         self.scp_policy = (
             self.policy_expander.expand_policies(scp_policies)
             if scp_policies
@@ -494,19 +499,24 @@ class EffectivePolicyEvaluator:
         )
 
     def cache_stats(self) -> Dict[str, Dict[str, Any]]:
-        """Per-cache (entries, weight, capped) for memory diagnostics — log alongside RSS at a
-        given principal count to see live cache footprint and whether a cap has been reached."""
-        caches = {
-            "expansion": self.policy_expander._expansion_cache,
+        """Per-cache footprint for memory diagnostics — log alongside RSS at a given principal
+        count to see live cache size and whether a cap has been reached. Covers the expansion
+        cache and the (per-account-cleared) merge-condition memo."""
+        stats: Dict[str, Dict[str, Any]] = {}
+        exp = self.policy_expander._expansion_cache
+        stats["expansion"] = {
+            "entries": len(exp),
+            "weight": getattr(exp, "_weight", None),
+            "capped": getattr(exp, "_capped", None),
         }
-        return {
-            name: {
-                "entries": len(cache),
-                "weight": getattr(cache, "_weight", None),
-                "capped": getattr(cache, "_capped", None),
-            }
-            for name, cache in caches.items()
+        info = merge_condition_cache_info()
+        stats["merge"] = {
+            "entries": info.currsize,
+            "hits": info.hits,
+            "misses": info.misses,
+            "capped": info.currsize >= info.maxsize,
         }
+        return stats
 
     def create_json_report(
         self,

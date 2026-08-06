@@ -195,6 +195,59 @@ def test_include_denied_permissions_preserves_read_sections() -> None:
     )
 
 
+def _find_surviving_set(obj, path="report"):
+    """Return the path to the first ``set`` reachable in ``obj``, or None."""
+    if isinstance(obj, set):
+        return path
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if hit := _find_surviving_set(value, f"{path}.{key}"):
+                return hit
+    elif isinstance(obj, list):
+        for index, value in enumerate(obj):
+            if hit := _find_surviving_set(value, f"{path}[{index}]"):
+                return hit
+    return None
+
+
+def test_create_json_report_emits_no_sets() -> None:
+    """create_json_report's in-place _finalize must convert every set to a list. The S3 upload
+    path serializes with a json handler that str()s an unexpected set (a Python repr, not a JSON
+    array) instead of raising, so a surviving set corrupts the blob silently. Assert no set
+    survives anywhere in the returned report, and that json.dumps accepts it with no default=."""
+    with open(
+        os.path.join(
+            os.path.dirname(__file__),
+            "test_data/test_account_authorizations_details.json",
+        )
+    ) as f:
+        auth_details = AuthorizationDetails(json.load(f))
+    with open(
+        os.path.join(os.path.dirname(__file__), "test_data/test_scp_policy_1.json")
+    ) as f:
+        scp_data = json.load(f)
+    scp_policies = [
+        PolicyWithSource(
+            scp_data["Policy"]["PolicySummary"]["Arn"],
+            json.loads(scp_data["Policy"]["Content"]),
+        )
+    ]
+    evaluator = EffectivePolicyEvaluator(auth_details, scp_policies)
+    res = evaluator.evaluate(
+        arn="arn:aws:iam::123456789012:user/TestUser1", entity_type=EntityType.user
+    )
+    report = evaluator.create_json_report(res)
+
+    # the fixture populates allowed/denied/ineffective, so source + denied_by sets are all present
+    assert report["allowed_permissions"]
+    assert report["ineffective_permissions"]
+    surviving = _find_surviving_set(report)
+    assert surviving is None, f"set survived _finalize at {surviving}"
+    json.dumps(
+        report
+    )  # no default= => a surviving set (or non-list HashableList) would raise
+
+
 def test_expand_minimize() -> None:
     evaluator = EffectivePolicyEvaluator(AuthorizationDetails({}), None)
     expanded_policy = evaluator.policy_expander.expand_policies(
@@ -308,18 +361,24 @@ def test_shared_evaluator_matches_standalone() -> None:
 
     arns = [f"arn:aws:iam::123456789012:role/{n}" for n in ("R0", "R1", "R2")]
 
-    def shrink_of(evaluator: EffectivePolicyEvaluator, arn: str):
+    def outputs_of(evaluator: EffectivePolicyEvaluator, arn: str):
+        # Compare BOTH contracts per principal: shrink_policy (Contract B) and the full
+        # create_json_report (Contract A). The report path carries the shared merged conditions
+        # this PR is built around, so a cache-aliasing regression that shrink_policy misses shows
+        # up here.
         res = evaluator.evaluate(arn=arn, entity_type=EntityType.role)
-        return _canonical(
+        shrunk = _canonical(
             evaluator.policy_expander.shrink_policy(res.allowed_permissions)
         )
+        report = _canonical(evaluator.create_json_report(res))
+        return shrunk, report
 
     auth = AuthorizationDetails(auth_data)
     standalone = {
-        arn: shrink_of(EffectivePolicyEvaluator(auth, scps()), arn) for arn in arns
+        arn: outputs_of(EffectivePolicyEvaluator(auth, scps()), arn) for arn in arns
     }
     shared_evaluator = EffectivePolicyEvaluator(auth, scps())
-    shared = {arn: shrink_of(shared_evaluator, arn) for arn in arns}
+    shared = {arn: outputs_of(shared_evaluator, arn) for arn in arns}
 
     for arn in arns:
         assert (
@@ -471,8 +530,13 @@ def test_cache_stats_reports_live_cache_weight() -> None:
     )
 
     stats = evaluator.cache_stats()
-    assert set(stats) == {"expansion"}
+    assert set(stats) == {"expansion", "merge"}
     for cache_stat in stats.values():
         assert isinstance(cache_stat["entries"], int)
-        assert isinstance(cache_stat["weight"], int)
         assert cache_stat["capped"] is False
+    # the process-global merge memo must be reported (F1) and reset per evaluator
+    assert isinstance(stats["merge"]["hits"], int)
+    fresh = EffectivePolicyEvaluator(auth, scps)
+    assert (
+        fresh.cache_stats()["merge"]["entries"] == 0
+    ), "merge memo not cleared per evaluator"

@@ -64,6 +64,17 @@ class CappedMemoCache(dict):
             self._weight += weight
         super().__setitem__(key, value)
 
+    def update(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        # Route through __setitem__ so the weight cap is enforced (dict.update bypasses it).
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def setdefault(self, key: Any, default: Any = None) -> Any:
+        # Route through __setitem__ so the weight cap is enforced (dict.setdefault bypasses it).
+        if key not in self:
+            self[key] = default
+        return self.get(key, default)
+
     def clear(self) -> None:
         super().clear()
         self._weight = 0
