@@ -1,8 +1,7 @@
-import json
 import logging
 from collections import defaultdict
 from dataclasses import replace
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, cast
 
 from iam_ape.consts import PolicyElement
 from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
@@ -17,7 +16,9 @@ from iam_ape.helper_functions import (
     deep_update,
     get_default_policy_for_managed_policy,
     merge_condition,
+    merge_condition_cache_info,
     normalize_policy,
+    reset_merge_condition_cache,
     wildcard_match,
 )
 from iam_ape.helper_types import EntityType, FinalReportT
@@ -257,10 +258,8 @@ def apply_permission_boundary(
     permission_boundary: PermissionsContainer,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     def permit(at: Action, bt: Action) -> Action:
-        return replace(
-            at,
-            condition=merge_condition(at.condition, bt.condition, negate=False),
-        )
+        cond = merge_condition(at.condition, bt.condition, negate=False)
+        return cast(Action, replace(at, condition=cond))
 
     def deny(at: Action, boundary_id: str) -> IneffectiveAction:
         return IneffectiveAction(
@@ -490,22 +489,67 @@ class EffectivePolicyEvaluator:
     ) -> None:
         self.auth_details = authorization_details
         self.policy_expander = policy_expander or PolicyExpander()
+        # The merge-condition memo is a module-global lru_cache; clear it here so its retention is
+        # per-account (released at the account boundary), not accumulated process-wide.
+        reset_merge_condition_cache()
         self.scp_policy = (
             self.policy_expander.expand_policies(scp_policies)
             if scp_policies
             else PermissionsContainer()
         )
 
+    def cache_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Per-cache footprint for memory diagnostics — log alongside RSS at a given principal
+        count to see live cache size and whether a cap has been reached. Covers the expansion
+        cache and the (per-account-cleared) merge-condition memo."""
+        stats: Dict[str, Dict[str, Any]] = {}
+        exp = self.policy_expander._expansion_cache
+        stats["expansion"] = {
+            "entries": len(exp),
+            "weight": getattr(exp, "_weight", None),
+            "capped": getattr(exp, "_capped", None),
+        }
+        info = merge_condition_cache_info()
+        stats["merge"] = {
+            "entries": info.currsize,
+            "hits": info.hits,
+            "misses": info.misses,
+            # maxsize is None for an unbounded lru_cache; an unbounded memo is never capped.
+            "capped": info.maxsize is not None and info.currsize >= info.maxsize,
+        }
+        return stats
+
     def create_json_report(
-        self, permissions_container: PermissionsContainer
+        self,
+        permissions_container: PermissionsContainer,
+        include_denied_permissions: bool = True,
     ) -> FinalReportT:
         def action_to_service(action: str) -> str:
             return action.split(":")[0]
 
-        def serialize_set(obj):
-            if isinstance(obj, set):
-                return list(obj)
-            return obj
+        def _finalize(obj: Any) -> None:
+            # In-place finalize, replacing a json.loads(json.dumps(...)) round-trip. The upload
+            # path's json handler str()s sets (writing a Python repr, not a JSON array), so the
+            # source / denied_by / NotResource sets MUST become lists here; sets stay sets during
+            # the build above for dedup and are converted only now. Done in place (not by
+            # building a copy) so the peak holds one structure, not the original + a ~330 MB
+            # string + a parallel copy. defaultdict factories are cleared so the report reads
+            # like the plain dict the round-trip produced (no auto-vivification on a missing key);
+            # HashableDict/HashableList conditions are left as-is (they serialize as dict/list).
+            if isinstance(obj, dict):
+                if isinstance(obj, defaultdict):
+                    obj.default_factory = None
+                for key, value in obj.items():
+                    if isinstance(value, set):
+                        obj[key] = list(value)
+                    else:
+                        _finalize(value)
+            elif isinstance(obj, list):
+                for i, value in enumerate(obj):
+                    if isinstance(value, set):
+                        obj[i] = list(value)
+                    else:
+                        _finalize(value)
 
         """
         {
@@ -570,7 +614,13 @@ class EffectivePolicyEvaluator:
                 )
             ),
         }
-        sections = ("allowed_permissions", "denied_permissions")
+        # denied_permissions re-serializes the full SCP deny expansion per principal and
+        # dominates runtime; skip it for callers that don't read it.
+        sections = (
+            ("allowed_permissions", "denied_permissions")
+            if include_denied_permissions
+            else ("allowed_permissions",)
+        )
         for section in sections:
             for action_tuple_set in getattr(permissions_container, section).values():
                 for action_tuple in action_tuple_set:
@@ -585,18 +635,19 @@ class EffectivePolicyEvaluator:
                     for access_level in self.policy_expander.get_action_access_levels(
                         action_tuple.action
                     ):
-                        if cond := merge_condition(
-                            curr_context[access_level]
-                            .get(action_tuple.action, {})
-                            .get("Condition", {}),
-                            action_tuple.condition,
-                            negate=False,
-                            hashable=False,
-                        ):
-                            curr_context[access_level][action_tuple.action][
-                                "Condition"
-                            ] = cond
-                        curr_context[access_level][action_tuple.action]["source"].add(
+                        level_map = curr_context[access_level]
+                        existing = level_map.get(action_tuple.action, {}).get(
+                            "Condition", {}
+                        )
+                        if action_tuple.condition or existing:
+                            if cond := merge_condition(
+                                existing,
+                                action_tuple.condition,
+                                negate=False,
+                                hashable=False,
+                            ):
+                                level_map[action_tuple.action]["Condition"] = cond
+                        level_map[action_tuple.action]["source"].add(
                             action_tuple.source
                         )
 
@@ -619,7 +670,7 @@ class EffectivePolicyEvaluator:
                     action_tuple.action
                 ]["denied_by"].add(action_tuple.denied_by)
 
-        res = json.loads(json.dumps(res, default=serialize_set))
+        _finalize(res)
 
         return res
 

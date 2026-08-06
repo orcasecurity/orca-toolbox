@@ -17,7 +17,7 @@ from iam_ape.exceptions import (
     InvalidArnException,
 )
 from iam_ape.helper_classes import PolicyWithSource
-from iam_ape.helper_functions import deep_update
+from iam_ape.helper_functions import deep_update, normalize_policy
 from iam_ape.helper_types import AwsPolicyType, EntityType, FinalReportT
 
 logger = logging.getLogger("IAM-APE")
@@ -124,11 +124,14 @@ def load_auth_details_from_aws(profile: Optional[str] = None) -> AuthorizationDe
 
 
 def load_scp_from_json(inp: str) -> PolicyWithSource:
+    # Normalize on load so every SCP reaching the evaluator is in the canonical
+    # (list-valued conditions) form the managed/inline policy loaders already produce.
+    # That is the invariant the deny path relies on to never mutate a condition in place.
     with open(inp) as f:
         policy_description = json.load(f)
         return PolicyWithSource(
             policy_description["Policy"]["PolicySummary"]["Arn"],
-            json.loads(policy_description["Policy"]["Content"]),
+            normalize_policy(json.loads(policy_description["Policy"]["Content"])),
         )
 
 
@@ -154,7 +157,9 @@ def load_scp_from_aws(
             policies.append(
                 PolicyWithSource(
                     policy_description["Policy"]["PolicySummary"]["Arn"],
-                    json.loads(policy_description["Policy"]["Content"]),
+                    normalize_policy(
+                        json.loads(policy_description["Policy"]["Content"])
+                    ),
                 )
             )
 

@@ -1,6 +1,7 @@
+import logging
 from collections import namedtuple
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set
 
 from iam_ape.consts import PolicyElement
 from iam_ape.helper_types import (
@@ -10,10 +11,81 @@ from iam_ape.helper_types import (
     PermissionsContainerDict,
 )
 
+logger = logging.getLogger("IAM-APE:cache")
+
+# Size ceiling for the expansion cache (retained-Action count at which it stops accepting new
+# keys). Sized from the MEASURED transitive footprint (tracemalloc): a condition-free expansion
+# Action is ~300 B, so 1 M entries is ~300 MB — a fraction of the clouder pod. Reaching the cap
+# degrades the cache to uncached, never the scan to failure. Tune against measured hit-rate-vs-cap.
+EXPANSION_CACHE_MAX_WEIGHT = 1_000_000  # ~300 MB at ~300 B / condition-free Action
+
+
+class CappedMemoCache(dict):
+    """A memo with a hard weight ceiling: once inserting a *new* key would exceed ``max_weight``
+    that key is skipped (recomputed on the next lookup) instead of stored. Every use here is a
+    pure memo — recompute-on-miss yields the same value — so refusing inserts at the cap is
+    correctness-neutral and degrades gracefully to "uncached beyond the cap", while the hot,
+    shared early entries stay cached. Deliberately not clear-on-overflow, which would repeatedly
+    discard those hot entries and pay to rebuild them (measured ~+18% wall on btg).
+
+    ``weigh`` maps a value to its weight. Entry count (default 1) is the right unit when values are
+    shared references whose per-entry bytes are near-constant (the condition-merge cache); the
+    expansion cache weighs by retained Action count instead, because its per-Action bytes vary ~6x
+    with the condition, so an entry cap would not bound its memory. Callers insert each key once and
+    never overwrite, so the counter is monotonic (add-on-accepted-insert, reset only by clear());
+    an overwrite would leave it unchanged — a benign under-count the insert-once contract rules
+    out. Reaching the cap is logged once (the account is running partially uncached)."""
+
+    def __init__(
+        self,
+        max_weight: int,
+        weigh: Optional[Callable[[Any], int]] = None,
+        name: str = "cache",
+    ) -> None:
+        super().__init__()
+        self._max_weight = max_weight
+        self._weigh = weigh
+        self._weight = 0
+        self._name = name
+        self._capped = False
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        if key not in self:
+            weight = self._weigh(value) if self._weigh is not None else 1
+            if self._weight + weight > self._max_weight:
+                if not self._capped:
+                    self._capped = True
+                    logger.warning(
+                        "%s reached its %d-weight cap; account running partially uncached",
+                        self._name,
+                        self._max_weight,
+                    )
+                return
+            self._weight += weight
+        super().__setitem__(key, value)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        # Route through __setitem__ so the weight cap is enforced (dict.update bypasses it).
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def setdefault(self, key: Any, default: Any = None) -> Any:
+        # Route through __setitem__ so the weight cap is enforced (dict.setdefault bypasses it).
+        if key not in self:
+            self[key] = default
+        return self.get(key, default)
+
+    def clear(self) -> None:
+        super().clear()
+        self._weight = 0
+        self._capped = False
+
 
 class HashableList(list):
+    # Immutable by construction; cache the hash so these serve as cache keys cheaply.
     def __init__(self, lst: list) -> None:
         super().__init__()
+        self._hash: Optional[int] = None
         for item in lst:
             if isinstance(item, dict):
                 self.append(HashableDict.recursively(item))
@@ -24,17 +96,28 @@ class HashableList(list):
                 self.append(item)
 
     def __hash__(self) -> int:  # type: ignore[override]
-        return hash(frozenset(self))
+        if self._hash is None:
+            self._hash = hash(frozenset(self))
+        return self._hash
 
 
 class HashableDict(dict):
+    # Immutable by construction; cache the hash so these serve as cache keys cheaply.
+    _hash: Optional[int] = None
+
     def __hash__(self) -> int:  # type: ignore[override]
-        return hash(tuple(sorted(self.items())))
+        if self._hash is None:
+            self._hash = hash(tuple(sorted(self.items())))
+        return self._hash
 
     @classmethod
     def recursively(cls, dict_obj: Optional[Dict[Any, Any]]):
         if dict_obj is None:
             return None
+        if isinstance(dict_obj, HashableDict):
+            # Already converted; skip re-wrapping on the hot path. Safe because no code
+            # mutates a condition in place (shrink_policy normalizes a copy).
+            return dict_obj
         new_dict = {}
         for key, value in dict_obj.items():
             if isinstance(value, dict):
