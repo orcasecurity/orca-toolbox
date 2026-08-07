@@ -497,7 +497,9 @@ class EffectivePolicyEvaluator:
         )
 
     def create_json_report(
-        self, permissions_container: PermissionsContainer
+        self,
+        permissions_container: PermissionsContainer,
+        include_denied_permissions: bool = True,
     ) -> FinalReportT:
         def action_to_service(action: str) -> str:
             return action.split(":")[0]
@@ -570,7 +572,17 @@ class EffectivePolicyEvaluator:
                 )
             ),
         }
-        sections = ("allowed_permissions", "denied_permissions")
+        # denied_permissions echoes the account-constant SCP deny expansion for every principal
+        # (evaluate() unions it in, then never reads it back), so it carries no per-principal
+        # information: an SCP's actual effect lands in allowed_permissions (conditions narrowed by
+        # the negated deny) and ineffective_permissions (dropped actions, with denied_by). It is
+        # also the section that scales with the SCP set, so building it dominates report time on
+        # SCP-heavy accounts. Callers that don't read it can skip it.
+        sections = (
+            ("allowed_permissions", "denied_permissions")
+            if include_denied_permissions
+            else ("allowed_permissions",)
+        )
         for section in sections:
             for action_tuple_set in getattr(permissions_container, section).values():
                 for action_tuple in action_tuple_set:
