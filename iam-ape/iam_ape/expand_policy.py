@@ -4,12 +4,18 @@ import logging
 import re
 import tarfile
 from collections import defaultdict
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple
 
 from requests.structures import CaseInsensitiveDict
 
-from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
+from iam_ape.consts import (
+    AWS_PARTITION_RE,
+    CROSS_SERVICE_RESOURCES,
+    RESOURCE_ARN_RE,
+    PolicyElement,
+    actions_json_location,
+)
 from iam_ape.exceptions import UnknownServiceExepction
 from iam_ape.helper_classes import (
     Action,
@@ -76,9 +82,14 @@ def _append_action(
     not_resources: Optional[List[str]],
     condition: Optional[Dict[str, Any]],
     source: str,
+    explicit_action: bool = False,
 ) -> None:
+    def has_wildcard(value: str) -> bool:
+        return "*" in value or "?" in value
+
     def relevant_resource(resource: str, action_service: str) -> bool:
-        if resource.lower() in (
+        resource = resource.lower()
+        if resource in (
             "*",
             "arn:*",
             "arn:aws:*",
@@ -86,16 +97,29 @@ def _append_action(
             "arn:aws-us-gov:*",
         ):
             return True
-        if match := RESOURCE_ARN_RE.match(resource):
-            resource_service = match.group("service").lower()
-            if resource_service == "iam" and action_service == "sts":
-                return True
-            return resource_service == action_service.lower()
-        return False
+        match = RESOURCE_ARN_RE.match(resource)
+        if not match:
+            return False
+        partition, resource_service = match.group("partition", "service")
+        if resource_service is None:
+            return has_wildcard(partition)
+        if not has_wildcard(partition) and not AWS_PARTITION_RE.fullmatch(partition):
+            return False
+        services = {action_service.lower()} | CROSS_SERVICE_RESOURCES.get(
+            action_service.lower(), frozenset()
+        )
+        return any(fnmatchcase(s, resource_service) for s in services)
 
-    for resource in resources or []:
-        if not relevant_resource(resource, service):
-            continue
+    def relevant(values: Optional[List[str]], keep_unmatched: bool) -> List[str]:
+        matched = [v for v in values or [] if relevant_resource(v, service)]
+        return matched if matched or not keep_unmatched else values or []
+
+    # A statement naming this action but no resource it can target still meant those resources for it
+    resources = relevant(resources, keep_unmatched=explicit_action)
+    # A NotResource that can't match the action excludes nothing, so dropping the action would under-report
+    not_resources = relevant(not_resources, keep_unmatched=True)
+
+    for resource in resources:
         if condition:
             for key, val in condition.items():
                 res[action].add(
@@ -117,9 +141,7 @@ def _append_action(
                     source=source,
                 )
             )
-    for not_resource in not_resources or []:
-        if not relevant_resource(not_resource, service):
-            continue
+    for not_resource in not_resources:
         if condition:
             for key, val in condition.items():
                 res[action].add(
@@ -252,6 +274,7 @@ class PolicyExpander:
                     not_resources=as_list(iam_action.not_resource),
                     condition=iam_action.condition,
                     source=iam_action.source,
+                    explicit_action=True,
                 )
         except KeyError:  # not a valid action
             logger.debug(f"Got an invalid action: {iam_action.action}")
