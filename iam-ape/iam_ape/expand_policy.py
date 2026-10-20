@@ -50,7 +50,8 @@ def shorten_to_leading_word(actions: FrozenSet[str]) -> Dict[str, Set[str]]:
     return action_mapping
 
 
-@functools.lru_cache()
+# One entry per service: with the default 128 a full pass over the services evicts each before its next use
+@functools.lru_cache(maxsize=None)
 def exact_leading_word_wildcards(actions: FrozenSet[str]) -> Dict[str, Set[str]]:
     """
     The leading-word groups whose "Word*", read as AWS reads it (a case-insensitive prefix glob),
