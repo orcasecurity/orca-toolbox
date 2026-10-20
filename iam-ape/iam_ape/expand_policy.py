@@ -50,6 +50,23 @@ def shorten_to_leading_word(actions: FrozenSet[str]) -> Dict[str, Set[str]]:
     return action_mapping
 
 
+@functools.lru_cache()
+def exact_leading_word_wildcards(actions: FrozenSet[str]) -> Dict[str, Set[str]]:
+    """
+    The leading-word groups whose "Word*", read as AWS reads it (a case-insensitive prefix glob),
+    matches exactly the group's actions. kms "Re" (ReEncryptFrom, ReEncryptTo) is not one of them,
+    as "kms:Re*" also matches ReplicateKey, RetireGrant and RevokeGrant.
+    :param actions: all actions of a service
+    :returns: dict of leading words to actions
+    """
+    return {
+        word: group
+        for word, group in shorten_to_leading_word(actions).items()
+        if sum(action.lower().startswith(word.lower()) for action in actions)
+        == len(group)
+    }
+
+
 def minimize_actions(
     service: str, actions: List[str], all_iam_actions: List[str]
 ) -> List[str]:
@@ -63,11 +80,11 @@ def minimize_actions(
         return [f"{service}:*"]
     if len(actions) == 1:
         return [f"{service}:{actions[0]}"]
-    all_service_wildcards = shorten_to_leading_word(frozenset(all_iam_actions))
+    all_service_wildcards = exact_leading_word_wildcards(frozenset(all_iam_actions))
     statements_wildcards = shorten_to_leading_word(frozenset(actions))
     res = []
     for wildcard, used_actions in statements_wildcards.items():
-        if len(used_actions) == len(all_service_wildcards[wildcard]):
+        if len(used_actions) == len(all_service_wildcards.get(wildcard, ())):
             res.append(f"{service}:{wildcard}*")
         else:
             res.extend([f"{service}:{action}" for action in used_actions])

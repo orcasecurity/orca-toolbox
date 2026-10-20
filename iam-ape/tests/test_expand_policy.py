@@ -1,8 +1,12 @@
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import pytest
 
-from iam_ape.expand_policy import PolicyExpander
+from iam_ape.expand_policy import (
+    PolicyExpander,
+    minimize_actions,
+    shorten_to_leading_word,
+)
 from iam_ape.helper_classes import Action, PolicyWithSource
 from iam_ape.helper_functions import normalize_policy
 from iam_ape.helper_types import AwsPolicyStatementType
@@ -127,3 +131,34 @@ def test_notresource_of_other_service_keeps_action() -> None:
         {"Effect": "Allow", "Action": ["*"], "NotResource": [not_resource]}
     )
     assert _scopes(expanded, "ec2:RunInstances") == {(None, not_resource)}
+
+
+def _reexpand(minimized: List[str]) -> Set[str]:
+    return set(_expand({"Effect": "Allow", "Action": minimized, "Resource": ["*"]}))
+
+
+@pytest.mark.parametrize(
+    "service, actions",
+    [
+        ("kms", ["ReEncryptFrom", "ReEncryptTo", "TagResource"]),
+        ("apigateway", ["GET", "PATCH"]),
+        (
+            "lightsail",
+            ["SetIpAddressType", "SetResourceAccessForBucket", "TagResource"],
+        ),
+    ],
+)
+def test_minimize_keeps_actions_whose_wildcard_matches_more(
+    service: str, actions: List[str]
+) -> None:
+    minimized = minimize_actions(service, actions, expander.all_iam_actions[service])
+    assert _reexpand(minimized) == {f"{service}:{action}" for action in actions}
+
+
+def test_minimize_round_trips_every_leading_word_group() -> None:
+    for service, service_actions in expander.all_iam_actions.items():
+        all_actions = frozenset(service_actions.keys())
+        for group in shorten_to_leading_word(all_actions).values():
+            actions = sorted(group | {min(all_actions - group, default=min(group))})
+            minimized = minimize_actions(service, actions, service_actions)
+            assert _reexpand(minimized) == {f"{service}:{a}" for a in actions}
