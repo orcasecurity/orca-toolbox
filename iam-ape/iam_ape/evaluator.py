@@ -18,6 +18,7 @@ from iam_ape.helper_functions import (
     get_default_policy_for_managed_policy,
     merge_condition,
     normalize_policy,
+    sort_condition_values,
     wildcard_match,
 )
 from iam_ape.helper_types import EntityType, FinalReportT
@@ -71,7 +72,10 @@ def should_deny(
         None if iam_action.resource == PolicyElement.WILDCARD else iam_action.resource
     )
 
-    for denied_action in denied_actions.get(iam_action.action, []):
+    # By source, so that of several denies the same one is reported as denied_by on every run
+    for denied_action in sorted(
+        denied_actions.get(iam_action.action, ()), key=lambda d: d.source
+    ):
 
         if iam_action == denied_action:
             return True, set(), denied_action.source
@@ -282,13 +286,13 @@ def apply_permission_boundary(
         )
 
     def get_pb_id() -> str:
-        if permission_boundary.allowed_permissions:
-            for values in permission_boundary.allowed_permissions.values():
-                for value in values:
-                    return value.source
-        for values in permission_boundary.denied_permissions.values():
-            for value in values:
-                return value.source
+        for permissions in (
+            permission_boundary.allowed_permissions,
+            permission_boundary.denied_permissions,
+        ):
+            for values in permissions.values():
+                if values:
+                    return min(value.source for value in values)
         raise PolicyNotFoundException("Permission Boundary source not found")
 
     permission_boundary_id = get_pb_id()
@@ -515,7 +519,7 @@ class EffectivePolicyEvaluator:
 
         def serialize_set(obj):
             if isinstance(obj, set):
-                return list(obj)
+                return sorted(obj)
             return obj
 
         """
@@ -616,7 +620,7 @@ class EffectivePolicyEvaluator:
                         ):
                             curr_context[access_level][action_tuple.action][
                                 "Condition"
-                            ] = cond
+                            ] = sort_condition_values(cond)
                         curr_context[access_level][action_tuple.action]["source"].add(
                             action_tuple.source
                         )
@@ -640,7 +644,7 @@ class EffectivePolicyEvaluator:
                     action_tuple.action
                 ]["denied_by"].add(action_tuple.denied_by)
 
-        res = json.loads(json.dumps(res, default=serialize_set))
+        res = json.loads(json.dumps(res, default=serialize_set, sort_keys=True))
 
         return res
 

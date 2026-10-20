@@ -88,7 +88,22 @@ def minimize_actions(
             res.append(f"{service}:{wildcard}*")
         else:
             res.extend([f"{service}:{action}" for action in used_actions])
-    return res
+    return sorted(res)
+
+
+def _condition_sort_key(action: Action) -> str:
+    return json.dumps(action.condition, sort_keys=True)
+
+
+def _ordered_statement(statement: AwsPolicyStatementType) -> AwsPolicyStatementType:
+    elements = (
+        PolicyElement.EFFECT,
+        PolicyElement.ACTION,
+        PolicyElement.RESOURCE,
+        PolicyElement.NOTRESOURCE,
+        PolicyElement.CONDITION,
+    )
+    return {e: statement[e] for e in elements if e in statement}  # type: ignore[return-value,literal-required]
 
 
 def _append_action(
@@ -396,7 +411,7 @@ class PolicyExpander:
             else:
                 # Multiple actions with same source/action/resource - merge their conditions
                 merged_condition: Dict[str, Any] = {}
-                for action in actions_list:
+                for action in sorted(actions_list, key=_condition_sort_key):
                     if action.condition:
                         for operator, operator_conditions in action.condition.items():
                             if operator in merged_condition:
@@ -478,14 +493,14 @@ class PolicyExpander:
                     final_statements[statement_key].get(PolicyElement.RESOURCE) or []
                 ) + (statement.get(PolicyElement.RESOURCE) or [])
                 if rsrc:
-                    final_statements[statement_key][PolicyElement.RESOURCE] = list(
+                    final_statements[statement_key][PolicyElement.RESOURCE] = sorted(
                         set(rsrc)
                     )
                 not_rsrc = (
                     final_statements[statement_key].get(PolicyElement.NOTRESOURCE) or []
                 ) + (statement.get(PolicyElement.NOTRESOURCE) or [])
                 if not_rsrc:
-                    final_statements[statement_key][PolicyElement.NOTRESOURCE] = list(
+                    final_statements[statement_key][PolicyElement.NOTRESOURCE] = sorted(
                         set(not_rsrc)
                     )
             else:
@@ -501,6 +516,9 @@ class PolicyExpander:
         ):
             policy_res["Statement"] = [admin_statement]
         else:
-            policy_res["Statement"] = list(final_statements.values())
+            policy_res["Statement"] = sorted(
+                (_ordered_statement(s) for s in final_statements.values()),
+                key=lambda statement: json.dumps(statement, sort_keys=True),
+            )
 
         return normalize_policy(policy_res)
