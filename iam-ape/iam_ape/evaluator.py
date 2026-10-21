@@ -26,6 +26,14 @@ from iam_ape.helper_types import EntityType, FinalReportT
 logger = logging.getLogger("IAM-APE:evaluator")
 
 
+def _narrower(allowed: Optional[str], denied: str) -> str:
+    """The resource of the part of an allow a deny covers:
+    the deny's when it lies within the allow, else the allow's."""
+    if allowed is None or wildcard_match(denied, allowed):
+        return denied
+    return allowed
+
+
 def _provably_disjoint(resource: str, other: str) -> bool:
     # wildcard_match ignores "?", so only a literal against a "*"-pattern (or literal) is decided exactly
     return "?" not in resource + other and ("*" not in resource or "*" not in other)
@@ -91,7 +99,7 @@ def should_deny(
                         Action(
                             action=iam_action.action,
                             resource=iam_action.resource,
-                            not_resource=None,
+                            not_resource=iam_action.not_resource,
                             condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
@@ -108,7 +116,7 @@ def should_deny(
                         Action(
                             action=iam_action.action,
                             resource=iam_action.resource,
-                            not_resource=None,
+                            not_resource=iam_action.not_resource,
                             condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
@@ -123,7 +131,9 @@ def should_deny(
                         narrow(
                             denied_action,
                             remaining=scoped(allowed_resource, denied_action.resource),
-                            denied_part=scoped(denied_action.resource, None),
+                            denied_part=scoped(
+                                denied_action.resource, iam_action.not_resource
+                            ),
                         )
                     )
                 elif _provably_disjoint(
@@ -136,7 +146,9 @@ def should_deny(
                         narrow(
                             denied_action,
                             remaining=scoped(allowed_resource, denied_action.resource),
-                            denied_part=scoped(allowed_resource, None),
+                            denied_part=scoped(
+                                allowed_resource, iam_action.not_resource
+                            ),
                         )
                     )
 
@@ -181,7 +193,8 @@ def should_deny(
                                 iam_action.resource, denied_action.resource
                             ),
                             denied_part=scoped(
-                                denied_action.resource, iam_action.not_resource
+                                _narrower(iam_action.resource, denied_action.resource),
+                                iam_action.not_resource,
                             ),
                         )
                     )

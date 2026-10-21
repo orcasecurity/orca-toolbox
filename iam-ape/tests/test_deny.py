@@ -608,3 +608,26 @@ def test_conditional_deny_on_disjoint_resource_leaves_allow_unchanged() -> None:
         r="arn:aws:kms:us-east-1:123456789012:key/testing-*", c=condition_1
     )
     _test_expected(a, d, (False, {a}, None))
+
+
+def test_conditional_deny_of_everything_keeps_the_allowed_resource_and_its_exclusion() -> None:
+    allowed = "arn:aws:s3:::builds/*"
+    excluded = "arn:aws:s3:::builds/2015.*"
+    region = {
+        "ForAnyValue:StringNotEqualsIfExists": {"aws:RequestedRegion": ["us-east-1"]}
+    }
+    a = default_action_tuple(r=allowed, nr=excluded)
+    d = default_action_tuple(r="*", c=region)
+    expected = (
+        False,
+        {
+            default_action_tuple(r=allowed, nr="*"),
+            default_action_tuple(
+                r=allowed,
+                nr=excluded,
+                c={"StringEqualsIfExists": {"aws:RequestedRegion": ["us-east-1"]}},
+            ),
+        },
+        None,
+    )
+    _test_expected(a, d, expected)
