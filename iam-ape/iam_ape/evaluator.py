@@ -18,11 +18,25 @@ from iam_ape.helper_functions import (
     get_default_policy_for_managed_policy,
     merge_condition,
     normalize_policy,
+    sort_condition_values,
     wildcard_match,
 )
 from iam_ape.helper_types import EntityType, FinalReportT
 
 logger = logging.getLogger("IAM-APE:evaluator")
+
+
+def _narrower(allowed: Optional[str], denied: str) -> str:
+    """The resource of the part of an allow a deny covers:
+    the deny's when it lies within the allow, else the allow's."""
+    if allowed is None or wildcard_match(denied, allowed):
+        return denied
+    return allowed
+
+
+def _provably_disjoint(resource: str, other: str) -> bool:
+    # wildcard_match ignores "?", so only a literal against a "*"-pattern (or literal) is decided exactly
+    return "?" not in resource + other and ("*" not in resource or "*" not in other)
 
 
 def should_deny(
@@ -37,7 +51,39 @@ def should_deny(
     res = set()
     partially_denied = False
 
-    for denied_action in denied_actions.get(iam_action.action, []):
+    def scoped(resource: Optional[str], not_resource: Optional[str]) -> Action:
+        return Action(
+            action=iam_action.action,
+            resource=resource,
+            not_resource=not_resource,
+            condition=iam_action.condition,
+            source=iam_action.source,
+        )
+
+    def narrow(
+        denied_action: Action, remaining: Action, denied_part: Action
+    ) -> Set[Action]:
+        # A conditional deny leaves the part it covers allowed only when its condition doesn't hold
+        if not denied_action.condition:
+            return {remaining}
+        return {
+            remaining,
+            replace(
+                denied_part,
+                condition=merge_condition(
+                    iam_action.condition, denied_action.condition
+                ),
+            ),
+        }
+
+    allowed_resource = (
+        None if iam_action.resource == PolicyElement.WILDCARD else iam_action.resource
+    )
+
+    # By source, so that of several denies the same one is reported as denied_by on every run
+    for denied_action in sorted(
+        denied_actions.get(iam_action.action, ()), key=lambda d: d.source
+    ):
 
         if iam_action == denied_action:
             return True, set(), denied_action.source
@@ -53,7 +99,7 @@ def should_deny(
                         Action(
                             action=iam_action.action,
                             resource=iam_action.resource,
-                            not_resource=None,
+                            not_resource=iam_action.not_resource,
                             condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
@@ -70,7 +116,7 @@ def should_deny(
                         Action(
                             action=iam_action.action,
                             resource=iam_action.resource,
-                            not_resource=None,
+                            not_resource=iam_action.not_resource,
                             condition=merge_condition(
                                 iam_action.condition, denied_action.condition
                             ),
@@ -81,32 +127,28 @@ def should_deny(
                     denied_action.resource, iam_action.resource
                 ):  # allowed Resource > denied Resource
                     partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=None
-                            if iam_action.resource == PolicyElement.WILDCARD
-                            else iam_action.resource,
-                            not_resource=denied_action.resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
+                    res.update(
+                        narrow(
+                            denied_action,
+                            remaining=scoped(allowed_resource, denied_action.resource),
+                            denied_part=scoped(
+                                denied_action.resource, iam_action.not_resource
                             ),
-                            source=iam_action.source,
                         )
                     )
-                else:  # scopes don't overlap
+                elif _provably_disjoint(
+                    iam_action.resource, denied_action.resource
+                ):  # scopes don't overlap
+                    pass
+                else:  # scopes may partially overlap
                     partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=None
-                            if iam_action.resource == PolicyElement.WILDCARD
-                            else iam_action.resource,
-                            not_resource=denied_action.resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
+                    res.update(
+                        narrow(
+                            denied_action,
+                            remaining=scoped(allowed_resource, denied_action.resource),
+                            denied_part=scoped(
+                                allowed_resource, iam_action.not_resource
                             ),
-                            source=iam_action.source,
                         )
                     )
 
@@ -121,15 +163,15 @@ def should_deny(
                     denied_action.not_resource, iam_action.resource
                 ):  # denied NotResource < allowed Resource
                     partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=denied_action.not_resource,
-                            not_resource=iam_action.not_resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
+                    res.update(
+                        narrow(
+                            denied_action,
+                            remaining=scoped(
+                                denied_action.not_resource, iam_action.not_resource
                             ),
-                            source=iam_action.source,
+                            denied_part=scoped(
+                                allowed_resource, denied_action.not_resource
+                            ),
                         )
                     )
 
@@ -142,32 +184,18 @@ def should_deny(
                     denied_action.resource, iam_action.not_resource
                 ):  # allowed NotResource > denied Resource
                     pass
-                elif wildcard_match(
-                    iam_action.not_resource, denied_action.resource
-                ):  # denied Resource > allowed NotResource
+                else:  # denied Resource > allowed NotResource, or scopes don't overlap
                     partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=iam_action.resource,
-                            not_resource=denied_action.resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
+                    res.update(
+                        narrow(
+                            denied_action,
+                            remaining=scoped(
+                                iam_action.resource, denied_action.resource
                             ),
-                            source=iam_action.source,
-                        )
-                    )
-                else:  # scopes don't overlap
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=iam_action.resource,
-                            not_resource=denied_action.resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
+                            denied_part=scoped(
+                                _narrower(iam_action.resource, denied_action.resource),
+                                iam_action.not_resource,
                             ),
-                            source=iam_action.source,
                         )
                     )
 
@@ -208,15 +236,13 @@ def should_deny(
                     )
                 else:  # scopes don't overlap
                     partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=denied_action.not_resource,
-                            not_resource=iam_action.not_resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
+                    res.update(
+                        narrow(
+                            denied_action,
+                            remaining=scoped(
+                                denied_action.not_resource, iam_action.not_resource
                             ),
-                            source=iam_action.source,
+                            denied_part=scoped(None, iam_action.not_resource),
                         )
                     )
 
@@ -273,13 +299,13 @@ def apply_permission_boundary(
         )
 
     def get_pb_id() -> str:
-        if permission_boundary.allowed_permissions:
-            for values in permission_boundary.allowed_permissions.values():
-                for value in values:
-                    return value.source
-        for values in permission_boundary.denied_permissions.values():
-            for value in values:
-                return value.source
+        for permissions in (
+            permission_boundary.allowed_permissions,
+            permission_boundary.denied_permissions,
+        ):
+            for values in permissions.values():
+                if values:
+                    return min(value.source for value in values)
         raise PolicyNotFoundException("Permission Boundary source not found")
 
     permission_boundary_id = get_pb_id()
@@ -506,7 +532,7 @@ class EffectivePolicyEvaluator:
 
         def serialize_set(obj):
             if isinstance(obj, set):
-                return list(obj)
+                return sorted(obj)
             return obj
 
         """
@@ -607,7 +633,7 @@ class EffectivePolicyEvaluator:
                         ):
                             curr_context[access_level][action_tuple.action][
                                 "Condition"
-                            ] = cond
+                            ] = sort_condition_values(cond)
                         curr_context[access_level][action_tuple.action]["source"].add(
                             action_tuple.source
                         )
@@ -631,7 +657,7 @@ class EffectivePolicyEvaluator:
                     action_tuple.action
                 ]["denied_by"].add(action_tuple.denied_by)
 
-        res = json.loads(json.dumps(res, default=serialize_set))
+        res = json.loads(json.dumps(res, default=serialize_set, sort_keys=True))
 
         return res
 
