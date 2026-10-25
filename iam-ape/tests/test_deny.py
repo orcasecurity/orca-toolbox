@@ -347,3 +347,12 @@ def test_scp_level_without_an_allow_for_the_principal_allows_nothing() -> None:
     auth = {"RoleDetailList": [role([allow()], tags={"team": "data"})]}
     scp = [deny(condition={"StringNotEquals": {TEAM: "data"}})]
     assert GET not in evaluate(auth, ROLE, scp_levels=[scp]).allowed_permissions
+
+
+def test_P21_single_character_wildcard_in_actions() -> None:
+    def granted(statements: List[Dict[str, Any]]) -> bool:
+        return GET in evaluate_role(statements).allowed_permissions
+
+    assert granted([statement(action="s3:GetObjec?")])
+    assert not granted([statement(not_action="s3:GetObjec?")])
+    assert not granted([statement(action="s3:*"), statement("Deny", "s3:Get?bject")])

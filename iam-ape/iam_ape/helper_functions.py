@@ -300,6 +300,6 @@ def deep_update(
 def wildcard_match(s: str, pattern: str) -> bool:
     if pattern == "*":
         return True
-    if "*" in pattern:
+    if "*" in pattern or "?" in pattern:
         return fnmatch(s, pattern)
     return s == pattern

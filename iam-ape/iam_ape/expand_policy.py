@@ -314,7 +314,7 @@ class PolicyExpander:
                             condition=iam_action.condition,
                             source=iam_action.source,
                         )
-            elif PolicyElement.WILDCARD in iam_action.action:  # {"Action": ["iam:*"]}
+            elif any(c in iam_action.action for c in "*?"):  # {"Action": ["iam:*"]}
                 service, wildcard_action = iam_action.action.split(":", maxsplit=1)
                 for action in self.all_iam_actions[service].keys():
                     if fnmatch(action.lower(), wildcard_action.lower()):
