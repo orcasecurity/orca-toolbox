@@ -57,9 +57,7 @@ def _values(raw: Any) -> Tuple[str, ...]:
     return tuple(sorted({str(v) for v in items}))
 
 
-def to_clauses(condition: Optional[Dict[str, Any]]) -> Clauses:
-    if not condition:
-        return ()
+def _parsed(condition: Dict[str, Any]) -> Clauses:
     return tuple(
         sorted(
             (operator, key, _values(values))
@@ -69,6 +67,18 @@ def to_clauses(condition: Optional[Dict[str, Any]]) -> Clauses:
     )
 
 
+_parsed_cached = functools.lru_cache(maxsize=100_000)(_parsed)
+
+
+def to_clauses(condition: Optional[Dict[str, Any]]) -> Clauses:
+    if not condition:
+        return ()
+    if isinstance(condition, HashableDict):  # every Action's condition is one
+        return _parsed_cached(condition)
+    return _parsed(condition)
+
+
+@functools.lru_cache(maxsize=100_000)
 def to_condition(clauses: Clauses) -> Optional[HashableDict]:
     if not clauses:
         return None
@@ -190,5 +200,7 @@ def implies(stronger: Clauses, weaker: Clauses) -> bool:
 
 
 def reset_caches() -> None:
+    _parsed_cached.cache_clear()
+    to_condition.cache_clear()
     negate.cache_clear()
     conjoin.cache_clear()

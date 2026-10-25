@@ -1,9 +1,9 @@
 import json
 import logging
 from collections import defaultdict
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
-from iam_ape.access import apply_denies, intersect, is_unrestricted, prune
+from iam_ape.access import apply_denies, intersect, is_unrestricted, order_key, prune
 from iam_ape.access import reset_caches as reset_access_caches
 from iam_ape.conditions import reset_caches as reset_condition_caches
 from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
@@ -40,10 +40,6 @@ def _ineffective(action: Action, denied_by: str) -> IneffectiveAction:
     )
 
 
-def _ordered(actions: Iterable[Action]) -> List[Action]:
-    return sorted(actions, key=repr)
-
-
 def explicitly_deny(
     permissions: PermissionsContainer,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
@@ -51,13 +47,18 @@ def explicitly_deny(
     final_actions_dict: Dict[str, Set[Action]] = defaultdict(set)
     ineffective_permissions: Set[IneffectiveAction] = set()
     denied_permissions = permissions.denied_permissions
+    ordered: Dict[str, List[Action]] = {}
     for action_key, action_values in permissions.allowed_permissions.items():
         for action_value in action_values:
             denies = denied_permissions.get(action_value.action)
             if not denies:
                 final_actions_dict[action_key].add(action_value)
                 continue
-            remaining, denied_by = apply_denies(action_value, _ordered(denies))
+            if action_value.action not in ordered:
+                ordered[action_value.action] = sorted(denies, key=order_key)
+            remaining, denied_by = apply_denies(
+                action_value, ordered[action_value.action]
+            )
             if remaining:
                 final_actions_dict[action_key].update(remaining)
             elif denied_by:

@@ -8,7 +8,7 @@ separate allows and are never merged back.
 """
 import functools
 import re
-from typing import Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from iam_ape.conditions import (
     Clauses,
@@ -143,9 +143,24 @@ def _same_scope(first: Action, second: Action) -> bool:
     )
 
 
+def order_key(action: Action) -> Tuple[Any, ...]:
+    """A total order on actions, weakest condition first."""
+    clauses = to_clauses(action.condition)
+    return (
+        len(clauses),
+        clauses,
+        action.resource or "",
+        action.not_resources,
+        action.source,
+    )
+
+
 def prune(actions: Iterable[Action]) -> FrozenSet[Action]:
     """Drop alternatives another one with the same resources and a weaker condition already allows."""
-    unique = sorted(set(actions), key=lambda a: (len(to_clauses(a.condition)), repr(a)))
+    distinct = set(actions)
+    if len(distinct) < 2:
+        return frozenset(distinct)
+    unique = sorted(distinct, key=order_key)
     kept: List[Action] = []
     for action in unique:
         clauses = to_clauses(action.condition)
