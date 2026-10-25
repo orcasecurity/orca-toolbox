@@ -8,12 +8,13 @@ separate allows and are never merged back.
 """
 import functools
 import re
+from collections import defaultdict
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from iam_ape.conditions import (
+    Clause,
     Clauses,
     conjoin,
-    implies,
     negate,
     to_clauses,
     to_condition,
@@ -136,13 +137,6 @@ def _scoped(
     )
 
 
-def _same_scope(first: Action, second: Action) -> bool:
-    return (first.resource, first.not_resources) == (
-        second.resource,
-        second.not_resources,
-    )
-
-
 def order_key(action: Action) -> Tuple[Any, ...]:
     """A total order on actions, weakest condition first."""
     clauses = to_clauses(action.condition)
@@ -160,19 +154,35 @@ def prune(actions: Iterable[Action]) -> FrozenSet[Action]:
     distinct = set(actions)
     if len(distinct) < 2:
         return frozenset(distinct)
-    unique = sorted(distinct, key=order_key)
+    by_scope: Dict[Tuple[Optional[str], Tuple[str, ...]], List[Action]] = defaultdict(
+        list
+    )
+    for action in distinct:
+        by_scope[(action.resource, action.not_resources)].append(action)
     kept: List[Action] = []
-    for action in unique:
-        clauses = to_clauses(action.condition)
-        if not any(
-            _same_scope(action, other) and implies(clauses, to_clauses(other.condition))
-            for other in kept
-        ):
-            kept.append(action)
+    for scoped in by_scope.values():
+        weaker: List[FrozenSet[Clause]] = []
+        for action in sorted(scoped, key=order_key):
+            clauses = frozenset(to_clauses(action.condition))
+            if not any(condition <= clauses for condition in weaker):
+                weaker.append(clauses)
+                kept.append(action)
     return frozenset(kept)
 
 
-@functools.lru_cache(maxsize=1_000_000)
+def _template(action: Action, source: str = "") -> Action:
+    """The action's scope and condition alone: what subtracting and intersecting depend on."""
+    return Action("", action.resource, action.not_resources, action.condition, source)
+
+
+def _instantiate(templates: Iterable[Action], action: Action) -> FrozenSet[Action]:
+    return frozenset(
+        Action(action.action, t.resource, t.not_resources, t.condition, action.source)
+        for t in templates
+    )
+
+
+@functools.lru_cache(maxsize=200_000)
 def subtract(allow: Action, deny: Action) -> Optional[FrozenSet[Action]]:
     """What's left of the allow after the deny; None when the deny can't touch it."""
     allowed, denied = _resource(allow), _resource(deny)
@@ -212,10 +222,26 @@ def subtract(allow: Action, deny: Action) -> Optional[FrozenSet[Action]]:
     return None if remaining == frozenset({allow}) else remaining
 
 
+Denies = Tuple[Action, ...]
+
+
+def prepare_denies(denies: Iterable[Action]) -> Denies:
+    """The denies of one action in the order they're applied, without the action itself."""
+    return tuple(_template(d, d.source) for d in sorted(denies, key=order_key))
+
+
 def apply_denies(
-    allow: Action, denies: Iterable[Action]
+    allow: Action, denies: Denies
 ) -> Tuple[FrozenSet[Action], Optional[str]]:
     """The allow after every deny, one after another, and the deny that removed it when one did."""
+    remaining, denied_by = _apply_denies(_template(allow), denies)
+    return _instantiate(remaining, allow), denied_by
+
+
+@functools.lru_cache(maxsize=200_000)
+def _apply_denies(
+    allow: Action, denies: Denies
+) -> Tuple[FrozenSet[Action], Optional[str]]:
     current: FrozenSet[Action] = frozenset({allow})
     for deny in denies:
         following: Set[Action] = set()
@@ -228,9 +254,13 @@ def apply_denies(
     return current, None
 
 
-@functools.lru_cache(maxsize=1_000_000)
 def intersect(allow: Action, bound: Action) -> FrozenSet[Action]:
     """The part of the allow a boundary (or SCP) allow statement also allows."""
+    return _instantiate(_intersect(_template(allow), _template(bound)), allow)
+
+
+@functools.lru_cache(maxsize=200_000)
+def _intersect(allow: Action, bound: Action) -> FrozenSet[Action]:
     clauses = conjoin(to_clauses(allow.condition), to_clauses(bound.condition))
     if clauses is None:
         return frozenset()
@@ -251,4 +281,5 @@ def reset_caches() -> None:
     _pattern.cache_clear()
     intersection.cache_clear()
     subtract.cache_clear()
-    intersect.cache_clear()
+    _apply_denies.cache_clear()
+    _intersect.cache_clear()

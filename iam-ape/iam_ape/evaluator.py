@@ -3,7 +3,14 @@ import logging
 from collections import defaultdict
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
-from iam_ape.access import apply_denies, intersect, is_unrestricted, order_key, prune
+from iam_ape.access import (
+    Denies,
+    apply_denies,
+    intersect,
+    is_unrestricted,
+    prepare_denies,
+    prune,
+)
 from iam_ape.access import reset_caches as reset_access_caches
 from iam_ape.conditions import reset_caches as reset_condition_caches
 from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
@@ -53,17 +60,17 @@ def explicitly_deny(
     final_actions_dict: Dict[str, Set[Action]] = defaultdict(set)
     ineffective_permissions: Set[IneffectiveAction] = set()
     denied_permissions = permissions.denied_permissions
-    ordered: Dict[str, List[Action]] = {}
+    prepared: Dict[str, Denies] = {}
     for action_key, action_values in permissions.allowed_permissions.items():
         for action_value in action_values:
             denies = denied_permissions.get(action_value.action)
             if not denies:
                 final_actions_dict[action_key].add(action_value)
                 continue
-            if action_value.action not in ordered:
-                ordered[action_value.action] = sorted(denies, key=order_key)
+            if action_value.action not in prepared:
+                prepared[action_value.action] = prepare_denies(denies)
             remaining, denied_by = apply_denies(
-                action_value, ordered[action_value.action]
+                action_value, prepared[action_value.action]
             )
             if remaining:
                 final_actions_dict[action_key].update(remaining)

@@ -194,11 +194,6 @@ def conjoin(first: Clauses, second: Clauses) -> Optional[Clauses]:
     return tuple(sorted(by_operator_key.values()))
 
 
-def implies(stronger: Clauses, weaker: Clauses) -> bool:
-    """Whether every request meeting `stronger` meets `weaker` (judged clause by clause)."""
-    return set(weaker) <= set(stronger)
-
-
 def reset_caches() -> None:
     _parsed_cached.cache_clear()
     to_condition.cache_clear()

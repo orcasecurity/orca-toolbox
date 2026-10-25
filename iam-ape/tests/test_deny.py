@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from iam_ape.access import apply_denies
+from iam_ape.access import apply_denies, prepare_denies
 from iam_ape.helper_classes import Action
 from tests.fixtures import ROLE, evaluate, evaluate_role, role, statement
 from tests.semantics import actions_allow, condition_keys, policy_allows, probes
@@ -246,13 +246,16 @@ def test_fully_denied_allow_is_ineffective_with_the_deny_as_its_reason() -> None
 def test_deny_on_another_resource_leaves_the_allow_as_it_is() -> None:
     granted = Action(GET, "arn:aws:s3:::a/*", (), None, "allow")
     denied = Action(GET, "arn:aws:s3:::b/*", (), None, "deny")
-    assert apply_denies(granted, [denied]) == (frozenset({granted}), None)
+    assert apply_denies(granted, prepare_denies([denied])) == (
+        frozenset({granted}),
+        None,
+    )
 
 
 def test_unconditional_deny_narrower_than_allow_becomes_an_exclusion() -> None:
     granted = Action(GET, None, (), None, "allow")
     denied = Action(GET, "arn:aws:s3:::a/*", (), None, "deny")
-    assert apply_denies(granted, [denied]) == (
+    assert apply_denies(granted, prepare_denies([denied])) == (
         frozenset({Action(GET, None, ("arn:aws:s3:::a/*",), None, "allow")}),
         None,
     )
