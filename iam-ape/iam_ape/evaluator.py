@@ -258,8 +258,12 @@ def explicitly_deny(
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     final_actions_dict: Dict[str, Set[Action]] = defaultdict(set)
     ineffective_permissions: Set[IneffectiveAction] = set()
+    denied_permissions = permissions.denied_permissions
     for action_key, action_values in permissions.allowed_permissions.items():
         for action_value in action_values:
+            if not denied_permissions.get(action_value.action):
+                final_actions_dict[action_key].add(action_value)
+                continue
             denied, new_action_values, denied_by = should_deny(
                 action_value, permissions.denied_permissions
             )
