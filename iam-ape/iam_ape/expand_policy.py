@@ -553,28 +553,27 @@ class PolicyExpander:
 
         deflated_statements = self.deflate_policy_statements(statements)
 
+        # Statements with the same actions, condition and NotResource can share one Resource list. Any
+        # other merge changes what they allow: "all but a" plus "all but b" is not "all but a and b", and
+        # a NotResource next to a Resource narrows that Resource.
         final_statements: Dict[int, AwsPolicyStatementType] = {}
         for statement in deflated_statements:
             statement_key = hash(
                 (
                     HashableList(statement[PolicyElement.ACTION] or []),
                     HashableDict.recursively(statement.get(PolicyElement.CONDITION)),
+                    HashableList(
+                        sorted(statement.get(PolicyElement.NOTRESOURCE) or [])
+                    ),
+                    PolicyElement.RESOURCE in statement,
                 )
             )
-            if statement_key in final_statements.keys():
-                rsrc = (
-                    final_statements[statement_key].get(PolicyElement.RESOURCE) or []
-                ) + (statement.get(PolicyElement.RESOURCE) or [])
-                if rsrc:
-                    final_statements[statement_key][PolicyElement.RESOURCE] = sorted(
-                        set(rsrc)
-                    )
-                not_rsrc = (
-                    final_statements[statement_key].get(PolicyElement.NOTRESOURCE) or []
-                ) + (statement.get(PolicyElement.NOTRESOURCE) or [])
-                if not_rsrc:
-                    final_statements[statement_key][PolicyElement.NOTRESOURCE] = sorted(
-                        set(not_rsrc)
+            if statement_key in final_statements:
+                merged = final_statements[statement_key]
+                if PolicyElement.RESOURCE in statement:
+                    merged[PolicyElement.RESOURCE] = sorted(
+                        set(merged.get(PolicyElement.RESOURCE) or [])
+                        | set(statement.get(PolicyElement.RESOURCE) or [])
                     )
             else:
                 final_statements[statement_key] = statement
