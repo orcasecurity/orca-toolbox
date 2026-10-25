@@ -10,6 +10,8 @@ AWS_PARTITION_RE = re.compile("aws(-[a-z]+)*")
 # ARN services an action's service is authorized on besides its own, per the AWS Service Authorization Reference
 CROSS_SERVICE_RESOURCES: Dict[str, FrozenSet[str]] = {
     "ec2-instance-connect": frozenset({"ec2"}),
+    "rds-data": frozenset({"rds"}),
+    "redshift-data": frozenset({"redshift", "redshift-serverless"}),
     "ssm": frozenset({"ec2", "ecs"}),
     "ssmmessages": frozenset({"ssm"}),
     "sts": frozenset({"iam"}),

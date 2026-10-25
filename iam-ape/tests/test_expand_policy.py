@@ -39,6 +39,15 @@ def _scopes(
         ("ssmmessages:OpenDataChannel", "arn:aws:ssm:*:*:session/*"),
         ("ec2-instance-connect:SendSSHPublicKey", ec2_instances),
         ("sts:AssumeRole", "arn:aws:iam::123456789012:role/example-role"),
+        ("rds-data:ExecuteStatement", "arn:aws:rds:us-east-1:123456789012:cluster:db"),
+        (
+            "redshift-data:ExecuteStatement",
+            "arn:aws:redshift:us-east-1:123456789012:cluster:dw",
+        ),
+        (
+            "redshift-data:ExecuteStatement",
+            "arn:aws:redshift-serverless:us-east-1:123456789012:workgroup/wg",
+        ),
     ],
 )
 def test_cross_service_resource_is_kept(action: str, resource: str) -> None:
