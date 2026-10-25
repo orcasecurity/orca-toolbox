@@ -23,7 +23,7 @@ from iam_ape.helper_functions import (
     wildcard_match,
 )
 from iam_ape.helper_types import EntityType, FinalReportT
-from iam_ape.principal_scp import SERVICE_LINKED_PATH, ScpLevel, principal_values
+from iam_ape.principal_scp import Principal, ScpLevel, is_service_linked_role
 
 logger = logging.getLogger("IAM-APE:evaluator")
 
@@ -529,11 +529,12 @@ class EffectivePolicyEvaluator:
         # The merge-condition memo is a module-global lru_cache; clear it here so its retention is
         # per-account (released at the account boundary), not accumulated process-wide.
         reset_merge_condition_cache()
-        self.scp_policy = PermissionsContainer()
+        # scp_policies is a single level (the SCPs attached to the account); scp_levels is every level of
+        # the organization, root first. A principal must be allowed by each level.
+        if scp_levels is None:
+            scp_levels = [scp_policies] if scp_policies else []
         self.scp_levels = [
-            ScpLevel(level, self.policy_expander)
-            for level in (scp_levels if scp_levels is not None else [scp_policies] if scp_policies else [])
-            if level
+            ScpLevel(level, self.policy_expander) for level in scp_levels if level
         ]
         self.org_id = org_id
         self.org_path = org_path
@@ -695,7 +696,9 @@ class EffectivePolicyEvaluator:
                                 negate=False,
                                 hashable=False,
                             ):
-                                level_map[action_tuple.action]["Condition"] = sort_condition_values(cond)
+                                level_map[action_tuple.action][
+                                    "Condition"
+                                ] = sort_condition_values(cond)
                         level_map[action_tuple.action]["source"].add(
                             action_tuple.source
                         )
@@ -799,11 +802,16 @@ class EffectivePolicyEvaluator:
 
         denied_permissions = direct_permissions.denied_permissions
         scp_containers: List[PermissionsContainer] = []
-        if not self.is_management_account and not (
-            entity_type == EntityType.role and SERVICE_LINKED_PATH in entity_obj.get("Path", "")
+        # SCPs don't apply to service-linked roles or to principals in the management account
+        if not self.is_management_account and not is_service_linked_role(
+            entity_obj, entity_type
         ):
-            values = principal_values(arn, entity_obj, entity_type, self.org_id, self.org_path)
-            scp_containers = [level.for_principal(values) for level in self.scp_levels]
+            principal = Principal.of(
+                arn, entity_obj, entity_type, self.org_id, self.org_path
+            )
+            scp_containers = [
+                level.for_principal(principal) for level in self.scp_levels
+            ]
         for boundary in (permission_boundary, *scp_containers):
             if boundary.allowed_permissions or boundary.denied_permissions:
                 (

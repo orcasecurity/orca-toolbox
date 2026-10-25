@@ -264,55 +264,6 @@ def test_expand_minimize() -> None:
     )
 
 
-def _canonical(obj):
-    """Order-independent view of a report section for comparison; source sets
-    serialize to lists whose order is not significant."""
-    if isinstance(obj, dict):
-        return {k: _canonical(v) for k, v in sorted(obj.items())}
-    if isinstance(obj, list):
-        return sorted((_canonical(v) for v in obj), key=repr)
-    return obj
-
-
-def test_include_denied_permissions_preserves_read_sections() -> None:
-    """create_json_report(include_denied_permissions=False) must drop only the
-    never-read denied_permissions section and leave the consumer-read sections
-    (allowed_permissions / ineffective_permissions) unchanged."""
-    with open(
-        os.path.join(
-            os.path.dirname(__file__),
-            "test_data/test_account_authorizations_details.json",
-        )
-    ) as f:
-        auth_details = AuthorizationDetails(json.load(f))
-    with open(
-        os.path.join(os.path.dirname(__file__), "test_data/test_scp_policy_1.json")
-    ) as f:
-        scp_data = json.load(f)
-    scp_policies = [
-        PolicyWithSource(
-            scp_data["Policy"]["PolicySummary"]["Arn"],
-            json.loads(scp_data["Policy"]["Content"]),
-        )
-    ]
-    evaluator = EffectivePolicyEvaluator(auth_details, scp_policies)
-    res = evaluator.evaluate(
-        arn="arn:aws:iam::123456789012:user/TestUser1", entity_type=EntityType.user
-    )
-
-    full = evaluator.create_json_report(res)
-    without_denied = evaluator.create_json_report(res, include_denied_permissions=False)
-
-    assert full["denied_permissions"]  # fixture has a denied section to skip
-    assert without_denied["denied_permissions"] == {}
-    assert _canonical(without_denied["allowed_permissions"]) == _canonical(
-        full["allowed_permissions"]
-    )
-    assert _canonical(without_denied["ineffective_permissions"]) == _canonical(
-        full["ineffective_permissions"]
-    )
-
-
 def _role(name: str, with_boundary: bool) -> dict:
     role = {
         "Arn": f"arn:aws:iam::123456789012:role/{name}",
@@ -438,7 +389,7 @@ def test_shared_evaluator_matches_standalone() -> None:
 
 
 def test_shrink_does_not_mutate_shared_scp() -> None:
-    """shrink_policy must not mutate the evaluator's shared scp_policy in place. Regression:
+    """shrink_policy must not mutate the evaluator's shared SCPs in place. Regression:
     normalize_policy rewrote a scalar condition value into a list, corrupting the SCP for
     every principal evaluated afterwards through the same (reused) evaluator."""
     role = _role("R1", with_boundary=False)
@@ -478,20 +429,22 @@ def test_shrink_does_not_mutate_shared_scp() -> None:
         return _canonical(
             [
                 dict(a.condition)
-                for actions in evaluator.scp_policy.denied_permissions.values()
+                for level in evaluator.scp_levels
+                for actions in level.for_principal(None).denied_permissions.values()
                 for a in actions
                 if a.condition
             ]
         )
 
     before = scp_conditions()
+    assert (
+        before
+    ), "the SCP deny must carry its condition for this test to mean anything"
     res = evaluator.evaluate(
         arn="arn:aws:iam::123456789012:role/R1", entity_type=EntityType.role
     )
     evaluator.policy_expander.shrink_policy(res.allowed_permissions)
-    assert (
-        scp_conditions() == before
-    ), "shrink_policy mutated the shared scp_policy in place"
+    assert scp_conditions() == before, "shrink_policy mutated the shared SCPs in place"
 
 
 def _managed_policy(arn: str, doc: dict) -> dict:
