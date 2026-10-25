@@ -23,6 +23,7 @@ from iam_ape.helper_functions import (
     wildcard_match,
 )
 from iam_ape.helper_types import EntityType, FinalReportT
+from iam_ape.policy_variables import for_principal, has_variables
 from iam_ape.principal_scp import Principal, ScpLevel, is_service_linked_role
 
 logger = logging.getLogger("IAM-APE:evaluator")
@@ -540,6 +541,7 @@ class EffectivePolicyEvaluator:
         self.org_path = org_path
         self.is_management_account = is_management_account
         self._boundaries: Dict[str, PermissionsContainer] = {}
+        self._has_variables: Dict[str, bool] = {}
 
     def cache_stats(self) -> Dict[str, Dict[str, Any]]:
         """Per-cache footprint for memory diagnostics — log alongside RSS at a given principal
@@ -759,23 +761,33 @@ class EffectivePolicyEvaluator:
             else:
                 PolicyNotFoundException(f"Couldn't find policy {policy_arn}")
 
-    def get_permission_boundary(self, entity: Dict[str, Any]) -> PermissionsContainer:
-        permissions = PermissionsContainer()
-        if pb_arn := entity.get("PermissionsBoundary", {}).get(
-            "PermissionsBoundaryArn"
-        ):
-            if pb_arn in self._boundaries:
-                return self._boundaries[pb_arn]
-            policy = PolicyWithSource(
-                source=pb_arn,
-                policy=get_default_policy_for_managed_policy(
-                    self.auth_details.Policy.get(pb_arn, {})
-                ),
+    def get_permission_boundary(
+        self, entity: Dict[str, Any], principal: Optional[Principal] = None
+    ) -> PermissionsContainer:
+        pb_arn = entity.get("PermissionsBoundary", {}).get("PermissionsBoundaryArn")
+        if not pb_arn:
+            return PermissionsContainer()
+        if pb_arn in self._boundaries:
+            return self._boundaries[pb_arn]
+        policy = PolicyWithSource(
+            source=pb_arn,
+            policy=get_default_policy_for_managed_policy(
+                self.auth_details.Policy.get(pb_arn, {})
+            ),
+        )
+        if principal is not None and self._policy_has_variables(policy):
+            return self.policy_expander.expand_policies(
+                [for_principal(policy, principal)]
             )
-            permissions = self.policy_expander.expand_policies([policy])
-            self._boundaries[pb_arn] = permissions
+        self._boundaries[pb_arn] = self.policy_expander.expand_policies([policy])
+        return self._boundaries[pb_arn]
 
-        return permissions
+    def _policy_has_variables(self, policy: PolicyWithSource) -> bool:
+        if not policy.source.startswith("arn:"):  # inline: its own document
+            return has_variables(policy.policy)
+        if policy.source not in self._has_variables:
+            self._has_variables[policy.source] = has_variables(policy.policy)
+        return self._has_variables[policy.source]
 
     def evaluate(self, arn: str, entity_type: EntityType) -> PermissionsContainer:
         entity_obj = getattr(self.auth_details, entity_type.value).get(arn)
@@ -793,10 +805,18 @@ class EffectivePolicyEvaluator:
                         self.get_direct_policies(group_obj, EntityType.group)
                     )
 
-        direct_permissions = self.policy_expander.expand_policies(
-            direct_policies + indirect_policies
+        principal = Principal.of(
+            arn, entity_obj, entity_type, self.org_id, self.org_path
         )
-        permission_boundary = self.get_permission_boundary(entity_obj)
+        direct_permissions = self.policy_expander.expand_policies(
+            [
+                for_principal(policy, principal)
+                if self._policy_has_variables(policy)
+                else policy
+                for policy in direct_policies + indirect_policies
+            ]
+        )
+        permission_boundary = self.get_permission_boundary(entity_obj, principal)
 
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
@@ -806,9 +826,6 @@ class EffectivePolicyEvaluator:
         if not self.is_management_account and not is_service_linked_role(
             entity_obj, entity_type
         ):
-            principal = Principal.of(
-                arn, entity_obj, entity_type, self.org_id, self.org_path
-            )
             scp_containers = [
                 level.for_principal(principal) for level in self.scp_levels
             ]
