@@ -23,6 +23,7 @@ from iam_ape.helper_functions import (
     wildcard_match,
 )
 from iam_ape.helper_types import EntityType, FinalReportT
+from iam_ape.principal_scp import SERVICE_LINKED_PATH, ScpLevel, principal_values
 
 logger = logging.getLogger("IAM-APE:evaluator")
 
@@ -512,17 +513,25 @@ class EffectivePolicyEvaluator:
         authorization_details: AuthorizationDetails,
         scp_policies: Optional[List[PolicyWithSource]] = None,
         policy_expander: Optional[PolicyExpander] = None,
+        scp_levels: Optional[List[List[PolicyWithSource]]] = None,
+        org_id: Optional[str] = None,
+        org_path: Optional[str] = None,
+        is_management_account: bool = False,
     ) -> None:
         self.auth_details = authorization_details
         self.policy_expander = policy_expander or PolicyExpander()
         # The merge-condition memo is a module-global lru_cache; clear it here so its retention is
         # per-account (released at the account boundary), not accumulated process-wide.
         reset_merge_condition_cache()
-        self.scp_policy = (
-            self.policy_expander.expand_policies(scp_policies)
-            if scp_policies
-            else PermissionsContainer()
-        )
+        self.scp_policy = PermissionsContainer()
+        self.scp_levels = [
+            ScpLevel(level, self.policy_expander)
+            for level in (scp_levels if scp_levels is not None else [scp_policies] if scp_policies else [])
+            if level
+        ]
+        self.org_id = org_id
+        self.org_path = org_path
+        self.is_management_account = is_management_account
 
     def cache_stats(self) -> Dict[str, Dict[str, Any]]:
         """Per-cache footprint for memory diagnostics — log alongside RSS at a given principal
@@ -779,7 +788,13 @@ class EffectivePolicyEvaluator:
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
         denied_permissions = direct_permissions.denied_permissions
-        for boundary in (permission_boundary, self.scp_policy):
+        scp_containers: List[PermissionsContainer] = []
+        if not self.is_management_account and not (
+            entity_type == EntityType.role and SERVICE_LINKED_PATH in entity_obj.get("Path", "")
+        ):
+            values = principal_values(arn, entity_obj, entity_type, self.org_id, self.org_path)
+            scp_containers = [level.for_principal(values) for level in self.scp_levels]
+        for boundary in (permission_boundary, *scp_containers):
             if boundary.allowed_permissions or boundary.denied_permissions:
                 (
                     final_permissions,
