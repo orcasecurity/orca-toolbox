@@ -391,7 +391,7 @@ class EffectivePolicyEvaluator:
                 policy = get_default_policy_for_managed_policy(policy_obj)
                 yield PolicyWithSource(policy=policy, source=policy_arn)
             else:
-                PolicyNotFoundException(f"Couldn't find policy {policy_arn}")
+                logger.warning(f"Managed policy {policy_arn} is missing; skipped")
 
     def get_permission_boundary(
         self, entity: Dict[str, Any], principal: Optional[Principal] = None
@@ -401,6 +401,10 @@ class EffectivePolicyEvaluator:
             return PermissionsContainer()
         if pb_arn in self._boundaries:
             return self._boundaries[pb_arn]
+        if pb_arn not in self.auth_details.Policy:
+            # e.g. an AWS managed policy used only as a boundary: evaluated as if there were none
+            logger.warning(f"Permissions boundary {pb_arn} is missing; ignored")
+            return PermissionsContainer()
         policy = PolicyWithSource(
             source=pb_arn,
             policy=get_default_policy_for_managed_policy(

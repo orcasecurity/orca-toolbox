@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from tests.fixtures import BOUNDARY, evaluate_role, statement
+from tests.fixtures import BOUNDARY, ROLE, evaluate, evaluate_role, role, statement
 from tests.test_deny import GET, allow, deny, mismatches
 
 WIDE = "arn:aws:s3:::*"
@@ -92,3 +92,11 @@ def test_action_the_boundary_doesnt_allow_is_ineffective() -> None:
 def test_unrestricted_boundary_keeps_the_allow() -> None:
     container = evaluate_role([allow(resource=NARROW)], boundary=[allow()])
     assert {a.resource for a in container.allowed_permissions[GET]} == {NARROW}
+
+
+def test_missing_boundary_policy_is_ignored() -> None:
+    # the boundary ARN isn't in the account's policies: the identity is still evaluated
+    auth = {"RoleDetailList": [role([allow(resource=NARROW)], boundary=BOUNDARY)]}
+    assert {a.resource for a in evaluate(auth, ROLE).allowed_permissions[GET]} == {
+        NARROW
+    }
