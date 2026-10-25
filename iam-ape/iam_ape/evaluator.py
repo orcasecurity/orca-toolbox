@@ -285,6 +285,8 @@ def apply_permission_boundary(
     permission_boundary: PermissionsContainer,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     def permit(at: Action, bt: Action) -> Action:
+        if bt.condition is None:
+            return at
         cond = merge_condition(at.condition, bt.condition, negate=False)
         return cast(Action, replace(at, condition=cond))
 
