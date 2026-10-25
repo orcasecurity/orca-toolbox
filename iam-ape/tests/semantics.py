@@ -4,6 +4,7 @@ It reads policies as written and decides one request (action, resource, context)
 does: allowed when an allow statement matches and no deny statement does. iam-ape's result is checked by
 deciding the same requests against the `Action`s it produced.
 """
+import functools
 import ipaddress
 import itertools
 import re
@@ -35,12 +36,14 @@ _POSITIVE_OF = {
 }
 
 
-def _glob(pattern: str, value: str, ignore_case: bool = False) -> bool:
+@functools.lru_cache(maxsize=100_000)
+def _compiled(pattern: str, ignore_case: bool) -> "re.Pattern[str]":
     regex = re.escape(pattern).replace(r"\*", ".*").replace(r"\?", ".")
-    return (
-        re.fullmatch(regex, value, re.DOTALL | (re.IGNORECASE if ignore_case else 0))
-        is not None
-    )
+    return re.compile(regex, re.DOTALL | (re.IGNORECASE if ignore_case else 0))
+
+
+def _glob(pattern: str, value: str, ignore_case: bool = False) -> bool:
+    return _compiled(pattern, ignore_case).fullmatch(value) is not None
 
 
 def _arn(pattern: str, value: str) -> bool:
