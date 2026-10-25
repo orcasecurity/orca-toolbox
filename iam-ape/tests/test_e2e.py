@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from typing import Any, Dict, List, Tuple
 
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.helper_classes import (
@@ -24,57 +25,44 @@ admin_policy: AwsPolicyType = {
     ],
 }
 
+_ORGANIZATIONS_AND_ES = [
+    "es:*",
+    "organizations:DescribeAccount",
+    "organizations:DescribeOrganization",
+    "organizations:DescribeOrganizationalUnit",
+    "organizations:DescribePolicy",
+    "organizations:ListChildren",
+    "organizations:ListParents",
+    "organizations:ListPolicies",
+    "organizations:ListPoliciesForTarget",
+    "organizations:ListRoots",
+    "organizations:ListTargetsForPolicy",
+]
+_S3_BUCKET = [
+    "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1",
+    "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1/*",
+]
+_REGION: Dict[str, Any] = {"StringEquals": {"aws:RequestedRegion": ["us-east-1"]}}
+# The MFA deny applies when both keys are false, so each grant holds when either one isn't
+_NOT_DENIED: List[Dict[str, Any]] = [
+    {"BoolIfExists": {"aws:MultiFactorAuthPresent": ["true"]}},
+    {"BoolIfExists": {"aws:ViaAWSService": ["true"]}},
+]
+_SCOPES: List[Tuple[List[str], List[str], Dict[str, Any]]] = [
+    (["ec2:*"], ["*"], _REGION),
+    (_ORGANIZATIONS_AND_ES, ["*"], {}),
+    (["s3:CreateBucket", "s3:CreateJob", "s3:Get*", "s3:List*"], _S3_BUCKET, {}),
+]
 expected_result = {
     "Statement": [
         {
             "Effect": "Allow",
-            "Action": ["ec2:*"],
-            "Resource": ["*"],
-            "Condition": {
-                "StringEquals": {"aws:RequestedRegion": ["us-east-1"]},
-                "Bool": {
-                    "aws:MultiFactorAuthPresent": ["true"],
-                    "aws:ViaAWSService": ["true"],
-                },
-            },
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "organizations:DescribeAccount",
-                "organizations:DescribeOrganization",
-                "organizations:DescribeOrganizationalUnit",
-                "organizations:DescribePolicy",
-                "organizations:ListChildren",
-                "organizations:ListParents",
-                "organizations:ListPolicies",
-                "organizations:ListPoliciesForTarget",
-                "organizations:ListRoots",
-                "organizations:ListTargetsForPolicy",
-                "es:*",
-            ],
-            "Resource": ["*"],
-            "Condition": {
-                "Bool": {
-                    "aws:MultiFactorAuthPresent": ["true"],
-                    "aws:ViaAWSService": ["true"],
-                }
-            },
-        },
-        {
-            "Effect": "Allow",
-            "Action": ["s3:Get*", "s3:List*", "s3:CreateBucket", "s3:CreateJob"],
-            "Resource": [
-                "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1",
-                "arn:aws:s3:::cf-templates-hrlp5hbiotb8-us-east-1/*",
-            ],
-            "Condition": {
-                "Bool": {
-                    "aws:MultiFactorAuthPresent": ["true"],
-                    "aws:ViaAWSService": ["true"],
-                }
-            },
-        },
+            "Action": actions,
+            "Resource": resources,
+            "Condition": {**extra, **alternative},
+        }
+        for actions, resources, extra in _SCOPES
+        for alternative in _NOT_DENIED
     ]
 }
 
@@ -118,7 +106,7 @@ def test_e2e() -> None:
     assert len(res.ineffective_permissions) > 150
 
     minimized_policy = evaluator.policy_expander.shrink_policy(res.allowed_permissions)
-    assert len(minimized_policy["Statement"]) == 3
+    assert len(minimized_policy["Statement"]) == 6
     assert hash(HashableDict.recursively(minimized_policy)) == hash(  # type: ignore
         HashableDict.recursively(expected_result)
     )
@@ -137,14 +125,20 @@ def test_e2e() -> None:
                 total += len(actions)
         return total
 
-    assert _distinct_action_count(json_report["allowed_permissions"]) == sum(
-        [len(x) for x in res.allowed_permissions.values()]
-    )
-    assert _distinct_action_count(json_report["denied_permissions"]) == sum(
-        [len(x) for x in res.denied_permissions.values()]
-    )
+    def _distinct_scope_count(permissions: dict) -> int:
+        # alternatives of one action on one resource share a report entry
+        return len(
+            {(a.action, a.resource or "*") for x in permissions.values() for a in x}
+        )
+
+    assert _distinct_action_count(
+        json_report["allowed_permissions"]
+    ) == _distinct_scope_count(res.allowed_permissions)
+    assert _distinct_action_count(
+        json_report["denied_permissions"]
+    ) == _distinct_scope_count(res.denied_permissions)
     assert _distinct_action_count(json_report["ineffective_permissions"]) == len(
-        res.ineffective_permissions
+        {(a.action, a.resource or "*") for a in res.ineffective_permissions}
     )
 
 

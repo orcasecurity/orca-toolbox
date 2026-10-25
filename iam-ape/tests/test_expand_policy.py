@@ -28,7 +28,10 @@ def _expand(statement: AwsPolicyStatementType) -> Dict[str, Set[Action]]:
 def _scopes(
     expanded: Dict[str, Set[Action]], action: str
 ) -> Set[Tuple[Optional[str], Optional[str]]]:
-    return {(a.resource, a.not_resource) for a in expanded.get(action, set())}
+    return {
+        (a.resource, ",".join(a.not_resources) or None)
+        for a in expanded.get(action, set())
+    }
 
 
 @pytest.mark.parametrize(
@@ -132,12 +135,12 @@ def test_service_wildcard_is_kept_for_every_action() -> None:
     assert _scopes(expanded, "kms:Decrypt") == {(resource, None)}
 
 
-def test_notresource_of_other_service_keeps_action() -> None:
+def test_notresource_of_other_service_allows_every_resource() -> None:
     not_resource = "arn:aws:s3:::example-bucket"
     expanded = _expand(
         {"Effect": "Allow", "Action": ["*"], "NotResource": [not_resource]}
     )
-    assert _scopes(expanded, "ec2:RunInstances") == {(None, not_resource)}
+    assert _scopes(expanded, "ec2:RunInstances") == {("*", None)}
 
 
 def _reexpand(minimized: List[str]) -> Set[str]:

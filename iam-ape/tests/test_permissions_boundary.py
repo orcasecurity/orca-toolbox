@@ -1,231 +1,94 @@
-from typing import Dict, Set
+"""Allows inside a permissions boundary, checked request by request against a direct evaluation."""
+from typing import Any, Dict, List, Tuple
 
-from iam_ape.evaluator import apply_permission_boundary
-from iam_ape.helper_classes import Action, PermissionsContainer
+import pytest
 
-action = "kms:CreateKey"
-resource_wide = "arn:aws:kms:us-east-1:123456789012:key/testing-*"
-resource_narrow = "arn:aws:kms:us-east-1:123456789012:key/testing-key-1"
-resource_other = "arn:aws:kms:us-east-1:123456789012:key/prod-key-1"
-condition_1 = {"DateGreaterThan": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"}}
-condition_2 = {"IpAddress": {"aws:SourceIp": "203.0.113.0/24"}}
+from tests.fixtures import BOUNDARY, evaluate_role, statement
+from tests.test_deny import GET, allow, deny, mismatches
 
-source = "test"
+WIDE = "arn:aws:s3:::*"
+NARROW = "arn:aws:s3:::a/*"
+OTHER = "arn:aws:s3:::b/*"
 
-"""
-def apply_permission_boundary(
-    allow_actions: Dict[str, Set[Action]],
-    permission_boundary: PermissionsContainer,
-) -> Dict[str, Set[Action]]:
+CASES: Dict[str, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {
+    "allow wider than boundary": ([allow(resource=WIDE)], [allow(resource=NARROW)]),
+    "allow narrower than boundary": ([allow(resource=NARROW)], [allow(resource=WIDE)]),
+    "allow outside boundary": ([allow(resource=NARROW)], [allow(resource=OTHER)]),
+    "allow wider than boundary NotResource": (
+        [allow(resource=WIDE)],
+        [allow(not_resource=NARROW)],
+    ),
+    "allow inside boundary NotResource": (
+        [allow(resource=NARROW)],
+        [allow(not_resource=OTHER)],
+    ),
+    "allow excluded by boundary NotResource": (
+        [allow(resource=NARROW)],
+        [allow(not_resource=NARROW)],
+    ),
+    "allow NotResource, boundary Resource": (
+        [allow(not_resource=NARROW)],
+        [allow(resource=WIDE)],
+    ),
+    "allow NotResource, boundary on its exclusion": (
+        [allow(not_resource=NARROW)],
+        [allow(resource=NARROW)],
+    ),
+    "allow NotResource, boundary NotResource": (
+        [allow(not_resource=NARROW)],
+        [allow(not_resource=OTHER)],
+    ),
+    "partial overlap": (
+        [allow(resource="arn:aws:s3:::*-prod/*")],
+        [allow(resource="arn:aws:s3:::team-*/*")],
+    ),
+    "conditional boundary": (
+        [allow(condition={"StringEquals": {"aws:RequestedRegion": "us-east-1"}})],
+        [allow(condition={"Bool": {"aws:MultiFactorAuthPresent": "true"}})],
+    ),
+    "P29 boundary on another region": (
+        [
+            allow(condition={"StringEquals": {"aws:RequestedRegion": "us-east-1"}}),
+            deny(
+                condition={
+                    "StringNotEquals": {
+                        "aws:RequestedRegion": ["us-east-1", "eu-west-1"]
+                    }
+                }
+            ),
+        ],
+        [allow(condition={"StringEquals": {"aws:RequestedRegion": "eu-west-1"}})],
+    ),
+    "two boundary statements": (
+        [allow(resource=WIDE)],
+        [allow(resource=NARROW), allow(resource=OTHER)],
+    ),
+    "boundary with a deny": (
+        [allow(resource=WIDE)],
+        [allow(), deny(resource=NARROW)],
+    ),
+    "boundary with a conditional deny": (
+        [allow(resource=WIDE)],
+        [allow(), deny(condition={"Bool": {"aws:ViaAWSService": "false"}})],
+    ),
+}
 
-if action_tuple.resource and boundary_tuple.resource
-"""
 
-
-def _test_expected(
-    allow: Dict[str, Set[Action]],
-    boundary: PermissionsContainer,
-    expected: Dict[str, Set[Action]],
-    denied: bool = False,
+@pytest.mark.parametrize("statements, boundary", CASES.values(), ids=CASES.keys())
+def test_matches_direct_evaluation(
+    statements: List[Dict[str, Any]], boundary: List[Dict[str, Any]]
 ) -> None:
-    res, ineffective = apply_permission_boundary(allow, boundary)
-    if denied:
-        assert list(ineffective)[0].denied_by == f"Permission Boundary: {source}"
-    assert res == expected
+    assert mismatches(statements, boundary) == []
 
 
-def default_action_tuple(r=None, nr=None, c=None) -> Dict[str, Set[Action]]:
-    return {
-        action: {
-            Action(
-                action=action, resource=r, not_resource=nr, condition=c, source=source
-            )
-        }
-    }
+def test_action_the_boundary_doesnt_allow_is_ineffective() -> None:
+    container = evaluate_role([allow()], boundary=[statement(action="s3:PutObject")])
+    assert GET not in container.allowed_permissions
+    assert {
+        a.denied_by for a in container.ineffective_permissions if a.action == GET
+    } == {f"Permission Boundary: {BOUNDARY}/0"}
 
 
-def default_permissions_container(r=None, nr=None, c=None):
-    return PermissionsContainer(
-        allowed_permissions=default_action_tuple(r, nr, c), denied_permissions={}
-    )
-
-
-def test_allow_resource_gt_boundary_resource() -> None:
-    allow = default_action_tuple(r=resource_wide)
-    boundary = default_permissions_container(r=resource_narrow)
-    expected = {
-        action: {
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition=None,
-                source=source,
-            )
-        }
-    }
-    _test_expected(allow, boundary, expected)
-
-
-def test_allow_resource_lt_boundary_resource() -> None:
-    allow = default_action_tuple(r=resource_narrow)
-    boundary = default_permissions_container(r=resource_wide)
-    expected = {
-        action: {
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition=None,
-                source=source,
-            )
-        }
-    }
-    _test_expected(allow, boundary, expected)
-
-
-def test_allow_resource_not_in_boundary_resource() -> None:
-    allow = default_action_tuple(r=resource_narrow)
-    boundary = default_permissions_container(r=resource_other)
-    expected: Dict[str, Set[Action]] = {}
-    _test_expected(allow, boundary, expected, True)
-
-
-def test_allow_resource_gt_boundary_notresource() -> None:
-    allow = default_action_tuple(r=resource_wide)
-    boundary = default_permissions_container(nr=resource_narrow)
-    expected = {
-        "kms:CreateKey": {
-            Action(
-                action="kms:CreateKey",
-                resource="arn:aws:kms:us-east-1:123456789012:key/testing-*",
-                not_resource="arn:aws:kms:us-east-1:123456789012:key/testing-key-1",
-                condition=None,
-                source="test",
-            )
-        }
-    }
-    _test_expected(allow, boundary, expected)
-
-
-def test_allow_resource_lt_boundary_notresource() -> None:
-    allow = default_action_tuple(r=resource_narrow)
-    boundary = default_permissions_container(nr=resource_wide)
-    expected: Dict[str, Set[Action]] = {}
-    _test_expected(allow, boundary, expected, True)
-
-
-def test_allow_resource_not_in_boundary_notresource() -> None:
-    allow = default_action_tuple(r=resource_wide)
-    boundary = default_permissions_container(nr=resource_other)
-    expected = {
-        "kms:CreateKey": {
-            Action(
-                action="kms:CreateKey",
-                resource="arn:aws:kms:us-east-1:123456789012:key/testing-*",
-                not_resource=None,
-                condition=None,
-                source="test",
-            )
-        }
-    }
-    _test_expected(allow, boundary, expected)
-
-
-def test_allow_notresource_gt_boundary_resource() -> None:
-    allow = default_action_tuple(nr=resource_wide)
-    boundary = default_permissions_container(r=resource_narrow)
-    expected: Dict[str, Set[Action]] = {}
-    _test_expected(allow, boundary, expected, True)
-
-
-def test_allow_notresource_lt_boundary_resource() -> None:
-    allow = default_action_tuple(nr=resource_narrow)
-    boundary = default_permissions_container(r=resource_wide)
-    expected = {
-        "kms:CreateKey": {
-            Action(
-                action="kms:CreateKey",
-                resource="arn:aws:kms:us-east-1:123456789012:key/testing-*",
-                not_resource="arn:aws:kms:us-east-1:123456789012:key/testing-key-1",
-                condition=None,
-                source="test",
-            )
-        }
-    }
-    _test_expected(allow, boundary, expected)
-
-
-def test_allow_notresource_not_in_boundary_resource() -> None:
-    allow = default_action_tuple(nr=resource_wide)
-    boundary = default_permissions_container(r=resource_other)
-    expected = {
-        "kms:CreateKey": {
-            Action(
-                action="kms:CreateKey",
-                resource="arn:aws:kms:us-east-1:123456789012:key/prod-key-1",
-                not_resource=None,
-                condition=None,
-                source="test",
-            )
-        }
-    }
-    _test_expected(allow, boundary, expected)
-
-
-def test_allow_notresource_gt_boundary_notresource() -> None:
-    allow = default_action_tuple(nr=resource_wide)
-    boundary = default_permissions_container(nr=resource_narrow)
-    expected = {
-        "kms:CreateKey": {
-            Action(
-                action="kms:CreateKey",
-                resource=None,
-                not_resource="arn:aws:kms:us-east-1:123456789012:key/testing-*",
-                condition=None,
-                source="test",
-            )
-        }
-    }
-    _test_expected(allow, boundary, expected)
-
-
-def test_allow_notresource_lt_boundary_notresource() -> None:
-    allow = default_action_tuple(nr=resource_narrow)
-    boundary = default_permissions_container(nr=resource_wide)
-    expected = {
-        "kms:CreateKey": {
-            Action(
-                action="kms:CreateKey",
-                resource=None,
-                not_resource="arn:aws:kms:us-east-1:123456789012:key/testing-*",
-                condition=None,
-                source="test",
-            )
-        }
-    }
-    _test_expected(allow, boundary, expected)
-
-
-def test_allow_notresource_not_in_boundary_notresource() -> None:
-    allow = default_action_tuple(nr=resource_wide)
-    boundary = default_permissions_container(nr=resource_other)
-    expected = {
-        "kms:CreateKey": {
-            Action(
-                action="kms:CreateKey",
-                resource=None,
-                not_resource="arn:aws:kms:us-east-1:123456789012:key/prod-key-1",
-                condition=None,
-                source="test",
-            ),
-            Action(
-                action="kms:CreateKey",
-                resource=None,
-                not_resource="arn:aws:kms:us-east-1:123456789012:key/testing-*",
-                condition=None,
-                source="test",
-            ),
-        }
-    }
-    _test_expected(allow, boundary, expected)
+def test_unrestricted_boundary_keeps_the_allow() -> None:
+    container = evaluate_role([allow(resource=NARROW)], boundary=[allow()])
+    assert {a.resource for a in container.allowed_permissions[GET]} == {NARROW}

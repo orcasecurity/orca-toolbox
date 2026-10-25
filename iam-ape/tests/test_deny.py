@@ -1,633 +1,288 @@
-from typing import Any, Dict, Optional, Set, Tuple
+"""Allows after identity-policy denies, checked request by request against a direct evaluation of the policy."""
+import json
+from typing import Any, Dict, List
 
-from iam_ape.evaluator import explicitly_deny, should_deny
-from iam_ape.expand_policy import PolicyExpander
-from iam_ape.helper_classes import Action, PolicyWithSource
-from iam_ape.helper_functions import normalize_policy
-from iam_ape.helper_types import AwsPolicyStatementType
+import pytest
 
-action = "kms:CreateKey"
-resource_wide = "arn:aws:kms:us-east-1:123456789012:*"
-resource_narrow = "arn:aws:kms:us-east-1:123456789012:key/testing-key-1"
-condition_1 = {"DateGreaterThan": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"}}
-condition_2 = {"IpAddress": {"aws:SourceIp": "203.0.113.0/24"}}
-ec2_instances = "arn:aws:ec2:*:*:instance/*"
+from iam_ape.access import apply_denies
+from iam_ape.helper_classes import Action
+from tests.fixtures import evaluate_role, statement
+from tests.semantics import actions_allow, condition_keys, policy_allows, probes
 
-source = "test"
-
-
-def _test_expected(
-    allow: Action, deny: Action, expected: Tuple[bool, Set[Action], Optional[str]]
-) -> None:
-    res = should_deny(allow, {action: {deny}})
-    assert res == expected
-
-
-def default_action_tuple(
-    r: Optional[str] = None,
-    nr: Optional[str] = None,
-    c: Optional[Dict[str, Any]] = None,
-) -> Action:
-    return Action(
-        action=action, resource=r, not_resource=nr, condition=c, source=source
-    )
-
-
-def test_allow_resource_gt_deny_resource() -> None:
-    a = default_action_tuple(r=resource_wide)
-    d = default_action_tuple(r=resource_narrow)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_wide,
-                not_resource=resource_narrow,
-                condition=None,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
+GET = "s3:GetObject"
+OBJECTS = [
+    f"arn:aws:s3:::{key}"
+    for key in [
+        "a/x",
+        "b/x",
+        "corp/x",
+        "other/x",
+        "x-prod/k",
+        "team-prod/k",
+        "team-x-prod/k",
+        "secret/x",
+        "secret/public/x",
+    ]
+]
+CANDIDATES: Dict[str, List[Any]] = {
+    "aws:SourceVpc": [None, "vpc-1", "vpc-2"],
+    "aws:SourceAccount": [None, "111111111111", "222222222222"],
+    "aws:ViaAWSService": [None, "true", "false"],
+    "aws:MultiFactorAuthPresent": [None, "true", "false"],
+    "aws:MultiFactorAuthAge": [None, "1", "7", "20"],
+    "aws:RequestedRegion": [None, "us-east-1", "eu-west-1", "us-west-2"],
+    "aws:TokenIssueTime": [None, "2018-01-01T00:00:00Z", "2019-01-01T00:00:00Z"],
+    "aws:SourceIp": [None, "203.0.113.5", "198.51.100.5"],
+    "aws:TagKeys": [None, ["secret"], ["public"], ["public", "secret"]],
+}
 
 
-def test_allow_resource_lt_deny_resource() -> None:
-    a = default_action_tuple(r=resource_narrow)
-    d = default_action_tuple(r=resource_wide)
-    expected = (True, set(), source)  # type: ignore
-    _test_expected(a, d, expected)
+def allow(**kwargs: Any) -> Dict[str, Any]:
+    return statement("Allow", GET, **kwargs)
 
 
-def test_allow_resource_gt_deny_resource_with_condition() -> None:
-    a = default_action_tuple(r=resource_wide)
-    d = default_action_tuple(r=resource_narrow, c=condition_1)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_wide,
-                not_resource=resource_narrow,
-                condition=None,
-                source=source,
-            ),
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition={
-                    "DateLessThanEquals": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"}
-                },
-                source=source,
-            ),
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
+def deny(**kwargs: Any) -> Dict[str, Any]:
+    return statement("Deny", GET, **kwargs)
 
 
-def test_allow_resource_lt_deny_resource_with_condition() -> None:
-    a = default_action_tuple(r=resource_narrow)
-    d = default_action_tuple(r=resource_wide, c=condition_1)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition={
-                    "DateLessThanEquals": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"}
-                },
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_resource_with_condition_gt_deny_resource_with_condition() -> None:
-    a = default_action_tuple(r=resource_wide, c=condition_1)
-    d = default_action_tuple(r=resource_narrow, c=condition_2)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_wide,
-                not_resource=resource_narrow,
-                condition=condition_1,
-                source=source,
-            ),
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition={
-                    "DateGreaterThan": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"},
-                    "NotIpAddress": {"aws:SourceIp": "203.0.113.0/24"},
-                },
-                source=source,
-            ),
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_resource_with_condition_lt_deny_resource_with_condition() -> None:
-    a = default_action_tuple(r=resource_narrow, c=condition_1)
-    d = default_action_tuple(r=resource_wide, c=condition_2)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition={
-                    "DateGreaterThan": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"},
-                    "NotIpAddress": {"aws:SourceIp": "203.0.113.0/24"},
-                },
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_resource_gt_deny_notresource() -> None:
-    a = default_action_tuple(r=resource_wide)
-    d = default_action_tuple(nr=resource_narrow)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition=None,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_resource_lt_deny_notresource() -> None:
-    a = default_action_tuple(r=resource_narrow)
-    d = default_action_tuple(nr=resource_wide)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition=None,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_resource_gt_deny_notresource_with_condition() -> None:
-    a = default_action_tuple(r=resource_wide)
-    d = default_action_tuple(nr=resource_narrow, c=condition_1)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition=None,
-                source=source,
-            ),
-            Action(
-                action=action,
-                resource=resource_wide,
-                not_resource=resource_narrow,
-                condition={
-                    "DateLessThanEquals": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"}
-                },
-                source=source,
-            ),
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_resource_lt_deny_notresource_with_condition() -> None:
-    a = default_action_tuple(r=resource_narrow)
-    d = default_action_tuple(nr=resource_wide, c=condition_1)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition=None,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_resource_with_condition_gt_deny_notresource_with_condition() -> None:
-    a = default_action_tuple(r=resource_wide, c=condition_1)
-    d = default_action_tuple(nr=resource_narrow, c=condition_2)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition=condition_1,
-                source=source,
-            ),
-            Action(
-                action=action,
-                resource=resource_wide,
-                not_resource=resource_narrow,
-                condition={
-                    "DateGreaterThan": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"},
-                    "NotIpAddress": {"aws:SourceIp": "203.0.113.0/24"},
-                },
-                source=source,
-            ),
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_resource_with_condition_lt_deny_notresource_with_condition() -> None:
-    a = default_action_tuple(r=resource_narrow, c=condition_1)
-    d = default_action_tuple(nr=resource_wide, c=condition_2)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=resource_narrow,
-                not_resource=None,
-                condition=condition_1,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_gt_deny_resource() -> None:
-    a = default_action_tuple(nr=resource_wide)
-    d = default_action_tuple(r=resource_narrow)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition=None,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_lt_deny_resource() -> None:
-    a = default_action_tuple(nr=resource_narrow)
-    d = default_action_tuple(r=resource_wide)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition=None,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_gt_deny_resource_with_condition() -> None:
-    a = default_action_tuple(nr=resource_wide)
-    d = default_action_tuple(r=resource_narrow, c=condition_1)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition=None,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_lt_deny_resource_with_condition() -> None:
-    a = default_action_tuple(nr=resource_narrow)
-    d = default_action_tuple(r=resource_wide, c=condition_1)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition=None,
-                source=source,
-            ),
-            Action(
-                action=action,
-                resource=resource_wide,
-                not_resource=resource_narrow,
-                condition={
-                    "DateLessThanEquals": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"}
-                },
-                source=source,
-            ),
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_with_condition_gt_deny_resource_with_condition() -> None:
-    a = default_action_tuple(nr=resource_wide, c=condition_1)
-    d = default_action_tuple(r=resource_narrow, c=condition_2)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition=condition_1,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_with_condition_lt_deny_resource_with_condition() -> None:
-    a = default_action_tuple(nr=resource_narrow, c=condition_1)
-    d = default_action_tuple(r=resource_wide, c=condition_2)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition=condition_1,
-                source=source,
-            ),
-            Action(
-                action=action,
-                resource=resource_wide,
-                not_resource=resource_narrow,
-                condition={
-                    "DateGreaterThan": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"},
-                    "NotIpAddress": {"aws:SourceIp": "203.0.113.0/24"},
-                },
-                source=source,
-            ),
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_gt_deny_notresource() -> None:
-    a = default_action_tuple(nr=resource_wide)
-    d = default_action_tuple(nr=resource_narrow)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition=None,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_lt_deny_notresource() -> None:
-    a = default_action_tuple(nr=resource_narrow)
-    d = default_action_tuple(nr=resource_wide)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition=None,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_gt_deny_notresource_with_condition() -> None:
-    a = default_action_tuple(nr=resource_wide)
-    d = default_action_tuple(nr=resource_narrow, c=condition_1)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition=None,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_lt_deny_notresource_with_condition() -> None:
-    a = default_action_tuple(nr=resource_narrow)
-    d = default_action_tuple(nr=resource_wide, c=condition_1)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition={
-                    "DateLessThanEquals": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"}
-                },
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_with_condition_gt_deny_notresource_with_condition() -> None:
-    a = default_action_tuple(nr=resource_wide, c=condition_1)
-    d = default_action_tuple(nr=resource_narrow, c=condition_2)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition=condition_1,
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def test_allow_notresource_with_condition_lt_deny_notresource_with_condition() -> None:
-    a = default_action_tuple(nr=resource_narrow, c=condition_1)
-    d = default_action_tuple(nr=resource_wide, c=condition_2)
-    expected = (
-        False,
-        {
-            Action(
-                action=action,
-                resource=None,
-                not_resource=resource_wide,
-                condition={
-                    "DateGreaterThan": {"aws:TokenIssueTime": "2020-01-01T00:00:01Z"},
-                    "NotIpAddress": {"aws:SourceIp": "203.0.113.0/24"},
-                },
-                source=source,
-            )
-        },
-        None,
-    )
-    _test_expected(a, d, expected)
-
-
-def _spot_policy_permissions(deny_condition: Optional[Dict[str, Any]]) -> Set[Action]:
-    deny_statement: AwsPolicyStatementType = {
-        "Effect": "Deny",
-        "Action": ["ec2:RunInstances"],
-        "Resource": [ec2_instances],
-    }
-    if deny_condition:
-        deny_statement["Condition"] = deny_condition
-    policy = normalize_policy(
-        {
-            "Version": "2012-10-17",
-            "Statement": [
-                {"Effect": "Allow", "Action": ["ec2:RunInstances"], "Resource": ["*"]},
-                deny_statement,
-            ],
-        }
-    )
-    permissions = PolicyExpander().expand_policies([PolicyWithSource(source, policy)])
-    allowed, _ = explicitly_deny(permissions)
-    return allowed["ec2:RunInstances"]
-
-
-def test_conditional_deny_narrower_than_allow_splits_the_allow() -> None:
-    # Shape of AWSEC2SpotServiceRolePolicy: instances may only be launched as spot
-    allowed = _spot_policy_permissions(
-        {"StringNotEquals": {"ec2:InstanceMarketType": "spot"}}
-    )
-    assert allowed == {
-        Action(
-            action="ec2:RunInstances",
-            resource=None,
-            not_resource=ec2_instances,
-            condition=None,
-            source=f"{source}/0",
-        ),
-        Action(
-            action="ec2:RunInstances",
-            resource=ec2_instances,
-            not_resource=None,
-            condition={"StringEquals": {"ec2:InstanceMarketType": ["spot"]}},
-            source=f"{source}/0",
-        ),
-    }
-
-
-def test_unconditional_deny_narrower_than_allow_excludes_the_denied_resource() -> None:
-    allowed = _spot_policy_permissions(None)
-    assert allowed == {
-        Action(
-            action="ec2:RunInstances",
-            resource=None,
-            not_resource=ec2_instances,
-            condition=None,
-            source=f"{source}/0",
+def mismatches(statements: List[Dict[str, Any]], boundary: Any = None) -> List[Any]:
+    """Requests iam-ape decides differently from AWS."""
+    allowed = evaluate_role(statements, boundary).allowed_permissions.get(GET, set())
+    every = statements + (boundary or [])
+    keys = {k: CANDIDATES[k] for k in condition_keys(every)}
+    return [
+        (resource, context)
+        for resource, context in probes(OBJECTS, keys)
+        if actions_allow(allowed, GET, resource, context)
+        != (
+            policy_allows(statements, GET, resource, context)
+            and (boundary is None or policy_allows(boundary, GET, resource, context))
         )
-    }
+    ]
 
 
-def test_conditional_deny_on_disjoint_resource_leaves_allow_unchanged() -> None:
-    a = default_action_tuple(r="arn:aws:kms:us-east-1:123456789012:key/prod-key-1")
-    d = default_action_tuple(
-        r="arn:aws:kms:us-east-1:123456789012:key/testing-*", c=condition_1
+CASES = {
+    "deny narrower than allow": [
+        allow(resource="arn:aws:s3:::*"),
+        deny(resource="arn:aws:s3:::a/*"),
+    ],
+    "deny wider than allow": [
+        allow(resource="arn:aws:s3:::a/*"),
+        deny(resource="arn:aws:s3:::*"),
+    ],
+    "conditional deny narrower than allow": [
+        allow(resource="arn:aws:s3:::*"),
+        deny(
+            resource="arn:aws:s3:::a/*",
+            condition={
+                "DateGreaterThan": {"aws:TokenIssueTime": "2018-06-01T00:00:00Z"}
+            },
+        ),
+    ],
+    "conditional allow, conditional deny": [
+        allow(
+            resource="arn:aws:s3:::*",
+            condition={"StringEquals": {"aws:RequestedRegion": "us-east-1"}},
+        ),
+        deny(
+            resource="arn:aws:s3:::a/*",
+            condition={"IpAddress": {"aws:SourceIp": "203.0.113.0/24"}},
+        ),
+    ],
+    "deny NotResource narrower than allow": [
+        allow(resource="arn:aws:s3:::*"),
+        deny(not_resource="arn:aws:s3:::a/*"),
+    ],
+    "conditional deny with NotResource": [
+        allow(resource="arn:aws:s3:::*"),
+        deny(
+            not_resource="arn:aws:s3:::a/*",
+            condition={"Bool": {"aws:ViaAWSService": "false"}},
+        ),
+    ],
+    "allow NotResource, deny NotResource": [
+        allow(not_resource="arn:aws:s3:::b/*"),
+        deny(not_resource=["arn:aws:s3:::a/*", "arn:aws:s3:::b/*"]),
+    ],
+    "allow NotResource, conditional deny NotResource": [
+        allow(not_resource="arn:aws:s3:::secret/*"),
+        deny(
+            not_resource="arn:aws:s3:::a/*",
+            condition={"StringNotEquals": {"aws:SourceVpc": "vpc-1"}},
+        ),
+    ],
+    "P1 perimeter deny": [
+        allow(resource="arn:aws:s3:::other/*"),
+        deny(not_resource="arn:aws:s3:::corp/*"),
+    ],
+    "P2 NotResource allow minus a Resource deny": [
+        allow(not_resource="arn:aws:s3:::b/*"),
+        deny(resource="arn:aws:s3:::a/*"),
+    ],
+    "P3 two NotResource allows": [
+        allow(not_resource="arn:aws:s3:::a/*"),
+        allow(not_resource="arn:aws:s3:::b/*"),
+    ],
+    "P4 NotResource allow plus a Resource allow": [
+        allow(not_resource="arn:aws:s3:::secret/*"),
+        allow(resource="arn:aws:s3:::secret/public/*"),
+    ],
+    "P5 deny on two keys": [
+        allow(),
+        deny(
+            condition={
+                "StringNotEquals": {"aws:SourceVpc": "vpc-1"},
+                "Bool": {"aws:ViaAWSService": "false"},
+            }
+        ),
+    ],
+    "P6 one operator on two keys": [
+        allow(),
+        deny(
+            condition={
+                "StringNotEquals": {
+                    "aws:SourceVpc": "vpc-1",
+                    "aws:SourceAccount": "222222222222",
+                }
+            }
+        ),
+    ],
+    "P7 ForAnyValue deny": [
+        allow(),
+        deny(condition={"ForAnyValue:StringEquals": {"aws:TagKeys": ["secret"]}}),
+    ],
+    "ForAllValues deny": [
+        allow(),
+        deny(condition={"ForAllValues:StringEquals": {"aws:TagKeys": ["secret"]}}),
+    ],
+    "P8 deny narrows an allowed region": [
+        allow(condition={"StringEquals": {"aws:RequestedRegion": "us-east-1"}}),
+        deny(
+            condition={
+                "StringNotEquals": {"aws:RequestedRegion": ["us-east-1", "eu-west-1"]}
+            }
+        ),
+    ],
+    "P9 two region denies": [
+        allow(),
+        deny(condition={"StringEquals": {"aws:RequestedRegion": "us-west-2"}}),
+        deny(condition={"StringEquals": {"aws:RequestedRegion": "eu-west-1"}}),
+    ],
+    "two resource denies": [
+        allow(),
+        deny(resource="arn:aws:s3:::a/*"),
+        deny(resource="arn:aws:s3:::b/*"),
+    ],
+    "allowed values minus denied ones": [
+        allow(
+            condition={
+                "StringEquals": {"aws:RequestedRegion": ["us-east-1", "eu-west-1"]}
+            }
+        ),
+        deny(condition={"StringEquals": {"aws:RequestedRegion": "eu-west-1"}}),
+    ],
+    "P12 partial overlap": [
+        allow(resource="arn:aws:s3:::*-prod/*"),
+        deny(not_resource="arn:aws:s3:::team-*/*"),
+    ],
+    "P18 deny StringEqualsIfExists": [
+        allow(),
+        deny(condition={"StringEqualsIfExists": {"aws:SourceVpc": "vpc-2"}}),
+    ],
+    "deny StringNotEqualsIfExists": [
+        allow(),
+        deny(condition={"StringNotEqualsIfExists": {"aws:SourceVpc": "vpc-1"}}),
+    ],
+    "P19 deny without MFA": [
+        allow(),
+        deny(condition={"Bool": {"aws:MultiFactorAuthPresent": "false"}}),
+    ],
+    "deny BoolIfExists": [
+        allow(),
+        deny(condition={"BoolIfExists": {"aws:MultiFactorAuthPresent": "false"}}),
+    ],
+    "deny Null": [
+        allow(),
+        deny(condition={"Null": {"aws:SourceVpc": "true"}}),
+    ],
+    "deny NumericGreaterThan": [
+        allow(condition={"NumericLessThan": {"aws:MultiFactorAuthAge": "10"}}),
+        deny(condition={"NumericGreaterThan": {"aws:MultiFactorAuthAge": "5"}}),
+    ],
+    "P36 deny old sessions": [
+        allow(),
+        deny(
+            condition={"DateLessThan": {"aws:TokenIssueTime": "2018-05-23T14:01:36Z"}}
+        ),
+    ],
+    "deny NotIpAddress": [
+        allow(),
+        deny(condition={"NotIpAddress": {"aws:SourceIp": "203.0.113.0/24"}}),
+    ],
+    "deny NotAction": [
+        allow(),
+        statement("Deny", not_action="s3:PutObject", resource="arn:aws:s3:::a/*"),
+    ],
+}
+
+
+@pytest.mark.parametrize("statements", CASES.values(), ids=CASES.keys())
+def test_matches_direct_evaluation(statements: List[Dict[str, Any]]) -> None:
+    assert mismatches(statements) == []
+
+
+def test_fully_denied_allow_is_ineffective_with_the_deny_as_its_reason() -> None:
+    container = evaluate_role(
+        [allow(resource="arn:aws:s3:::a/*"), deny(resource="arn:aws:s3:::*")]
     )
-    _test_expected(a, d, (False, {a}, None))
+    assert GET not in container.allowed_permissions
+    assert {
+        (a.action, a.denied_by)
+        for a in container.ineffective_permissions
+        if a.action == GET
+    } == {(GET, "inline/1")}
 
 
-def test_conditional_deny_of_everything_keeps_the_allowed_resource_and_its_exclusion() -> None:
-    allowed = "arn:aws:s3:::builds/*"
-    excluded = "arn:aws:s3:::builds/2015.*"
-    region = {
-        "ForAnyValue:StringNotEqualsIfExists": {"aws:RequestedRegion": ["us-east-1"]}
-    }
-    a = default_action_tuple(r=allowed, nr=excluded)
-    d = default_action_tuple(r="*", c=region)
-    expected = (
-        False,
-        {
-            default_action_tuple(r=allowed, nr="*"),
-            default_action_tuple(
-                r=allowed,
-                nr=excluded,
-                c={"StringEqualsIfExists": {"aws:RequestedRegion": ["us-east-1"]}},
-            ),
-        },
+def test_deny_on_another_resource_leaves_the_allow_as_it_is() -> None:
+    granted = Action(GET, "arn:aws:s3:::a/*", (), None, "allow")
+    denied = Action(GET, "arn:aws:s3:::b/*", (), None, "deny")
+    assert apply_denies(granted, [denied]) == (frozenset({granted}), None)
+
+
+def test_unconditional_deny_narrower_than_allow_becomes_an_exclusion() -> None:
+    granted = Action(GET, None, (), None, "allow")
+    denied = Action(GET, "arn:aws:s3:::a/*", (), None, "deny")
+    assert apply_denies(granted, [denied]) == (
+        frozenset({Action(GET, None, ("arn:aws:s3:::a/*",), None, "allow")}),
         None,
     )
-    _test_expected(a, d, expected)
+
+
+def test_spot_only_launch_splits_the_allow() -> None:
+    # Shape of AWSEC2SpotServiceRolePolicy: instances may only be launched as spot
+    instances = "arn:aws:ec2:*:*:instance/*"
+    allowed = evaluate_role(
+        [
+            statement(action="ec2:RunInstances"),
+            statement(
+                "Deny",
+                "ec2:RunInstances",
+                resource=instances,
+                condition={"StringNotEquals": {"ec2:InstanceMarketType": "spot"}},
+            ),
+        ]
+    ).allowed_permissions["ec2:RunInstances"]
+    assert {
+        (a.resource, a.not_resources, json.dumps(a.condition)) for a in allowed
+    } == {
+        (None, (instances,), "null"),
+        (instances, (), '{"StringEquals": {"ec2:InstanceMarketType": ["spot"]}}'),
+    }
+
+
+def test_deny_that_cant_be_negated_keeps_the_allow() -> None:
+    # BinaryEquals has no negation: the allow stays as it was (more than AWS allows, never less)
+    allowed = evaluate_role(
+        [allow(), deny(condition={"BinaryEquals": {"aws:SourceVpc": "QmluYXJ5"}})]
+    ).allowed_permissions[GET]
+    assert {(a.resource, a.condition) for a in allowed} == {("*", None)}

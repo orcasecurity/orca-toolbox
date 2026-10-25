@@ -1,123 +1,33 @@
 import json
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
-from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.helper_types import EntityType
 from iam_ape.policy_variables import resolve
 from iam_ape.principal_scp import Principal
+from tests.fixtures import ACCOUNT, ALICE, BOUNDARY, ROLE, evaluate, managed
+from tests.fixtures import role as _role
+from tests.fixtures import statement
+from tests.fixtures import user as _user
 
-ACCOUNT = "111111111111"
-ALICE = f"arn:aws:iam::{ACCOUNT}:user/alice"
-ROLE = f"arn:aws:iam::{ACCOUNT}:role/data"
 GET = "s3:GetObject"
 
 
 def _statement(
     resource: Any = None, not_resource: Any = None, condition: Any = None
 ) -> Dict[str, Any]:
-    statement: Dict[str, Any] = {"Effect": "Allow", "Action": [GET]}
-    if resource is not None:
-        statement["Resource"] = resource
-    if not_resource is not None:
-        statement["NotResource"] = not_resource
-    if condition is not None:
-        statement["Condition"] = condition
-    return statement
-
-
-def _user(
-    statements: List[Dict[str, Any]], groups: Optional[List[str]] = None
-) -> Dict[str, Any]:
-    return {
-        "Arn": ALICE,
-        "UserName": "alice",
-        "UserId": "AIDAALICE",
-        "Path": "/",
-        "GroupList": groups or [],
-        "AttachedManagedPolicies": [],
-        "Tags": [],
-        "UserPolicyList": [
-            {
-                "PolicyName": "inline",
-                "PolicyDocument": {"Version": "2012-10-17", "Statement": statements},
-            }
-        ],
-    }
-
-
-def _role(
-    statements: List[Dict[str, Any]],
-    tags: Optional[Dict[str, str]] = None,
-    session_tags: bool = False,
-    boundary: Optional[str] = None,
-) -> Dict[str, Any]:
-    role: Dict[str, Any] = {
-        "Arn": ROLE,
-        "RoleName": "data",
-        "RoleId": "AROADATA",
-        "Path": "/",
-        "AttachedManagedPolicies": [],
-        "InstanceProfileList": [],
-        "Tags": [{"Key": k, "Value": v} for k, v in (tags or {}).items()],
-        "AssumeRolePolicyDocument": {
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Action": ["sts:AssumeRole"]
-                    + (["sts:TagSession"] if session_tags else []),
-                }
-            ]
-        },
-        "RolePolicyList": [
-            {
-                "PolicyName": "inline",
-                "PolicyDocument": {"Version": "2012-10-17", "Statement": statements},
-            }
-        ],
-    }
-    if boundary:
-        role["PermissionsBoundary"] = {
-            "PermissionsBoundaryArn": boundary,
-            "PermissionsBoundaryType": "Policy",
-        }
-    return role
-
-
-def _managed(arn: str, statements: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return {
-        "Arn": arn,
-        "PolicyName": arn.rsplit("/", 1)[-1],
-        "DefaultVersionId": "v1",
-        "PolicyVersionList": [
-            {
-                "VersionId": "v1",
-                "IsDefaultVersion": True,
-                "Document": {"Version": "2012-10-17", "Statement": statements},
-            }
-        ],
-    }
+    built = statement(resource=resource, not_resource=not_resource, condition=condition)
+    built["Action"] = [GET]
+    return built
 
 
 def _scopes(
     auth: Dict[str, Any], arn: str
 ) -> Set[Tuple[Optional[str], Optional[str], Any]]:
-    evaluator = EffectivePolicyEvaluator(
-        AuthorizationDetails(
-            {
-                "RoleDetailList": [],
-                "UserDetailList": [],
-                "GroupDetailList": [],
-                "Policies": [],
-                **auth,
-            }
-        )
-    )
-    entity_type = EntityType.user if ":user/" in arn else EntityType.role
-    allowed = evaluator.evaluate(arn, entity_type).allowed_permissions
+    allowed = evaluate(auth, arn).allowed_permissions
     return {
         (
             a.resource,
-            a.not_resource,
+            ",".join(a.not_resources) or None,
             json.dumps(a.condition, sort_keys=True) if a.condition else None,
         )
         for a in allowed.get(GET, set())
@@ -237,13 +147,10 @@ def test_group_policy_reads_as_the_member() -> None:
 
 
 def test_boundary_with_variables_is_resolved_per_principal() -> None:
-    boundary_arn = f"arn:aws:iam::{ACCOUNT}:policy/boundary"
-    boundary = _managed(
-        boundary_arn, [_statement(resource="arn:aws:s3:::${aws:PrincipalTag/team}/*")]
+    boundary = managed(
+        BOUNDARY, [_statement(resource="arn:aws:s3:::${aws:PrincipalTag/team}/*")]
     )
-    role = _role(
-        [_statement(resource="*")], tags={"team": "data"}, boundary=boundary_arn
-    )
+    role = _role([_statement(resource="*")], tags={"team": "data"}, boundary=BOUNDARY)
     assert _scopes({"RoleDetailList": [role], "Policies": [boundary]}, ROLE) == {
         ("arn:aws:s3:::data/*", None, None)
     }

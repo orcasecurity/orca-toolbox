@@ -104,10 +104,6 @@ def minimize_actions(
     return sorted(res)
 
 
-def _condition_sort_key(action: Action) -> str:
-    return json.dumps(action.condition, sort_keys=True)
-
-
 def _ordered_statement(statement: AwsPolicyStatementType) -> AwsPolicyStatementType:
     elements = (
         PolicyElement.EFFECT,
@@ -128,6 +124,8 @@ def _append_action(
     condition: Optional[Dict[str, Any]],
     source: str,
 ) -> None:
+    had_not_resources = bool(not_resources)
+
     def has_wildcard(value: str) -> bool:
         return "*" in value or "?" in value
 
@@ -155,55 +153,39 @@ def _append_action(
         return any(fnmatchcase(s, resource_service) for s in services)
 
     resources = [r for r in resources or [] if relevant_resource(r, service)]
-    # A NotResource that can't match the action excludes nothing, so dropping the action would under-report
-    not_resources = [
-        r for r in not_resources or [] if relevant_resource(r, service)
-    ] or (not_resources or [])
-
+    # A NotResource that can't match the action excludes nothing from it
+    not_resources = [r for r in not_resources or [] if relevant_resource(r, service)]
+    full_condition = HashableDict.recursively(condition) if condition else None
     for resource in resources:
-        if condition:
-            for key, val in condition.items():
-                res[action].add(
-                    Action(
-                        action=action,
-                        resource=resource,
-                        not_resource=None,
-                        condition=HashableDict.recursively({key: val}),
-                        source=source,
-                    )
-                )
-        else:
-            res[action].add(
-                Action(
-                    action=action,
-                    resource=resource,
-                    not_resource=None,
-                    condition=None,
-                    source=source,
-                )
+        res[action].add(
+            Action(
+                action=action,
+                resource=resource,
+                not_resources=(),
+                condition=full_condition,
+                source=source,
             )
-    for not_resource in not_resources:
-        if condition:
-            for key, val in condition.items():
-                res[action].add(
-                    Action(
-                        action=action,
-                        resource=None,
-                        not_resource=not_resource,
-                        condition=HashableDict.recursively({key: val}),
-                        source=source,
-                    )
-                )
-        else:
-            res[action].add(
-                Action(
-                    action=action,
-                    resource=None,
-                    not_resource=not_resource,
-                    condition=None,
-                    source=source,
-                )
+        )
+    if not_resources:
+        res[action].add(
+            Action(
+                action=action,
+                resource=None,
+                not_resources=tuple(sorted(set(not_resources))),
+                condition=full_condition,
+                source=source,
             )
+        )
+    elif not resources and had_not_resources:
+        res[action].add(
+            Action(
+                action=action,
+                resource=PolicyElement.WILDCARD,
+                not_resources=(),
+                condition=full_condition,
+                source=source,
+            )
+        )
 
 
 class PolicyExpander:
@@ -269,7 +251,9 @@ class PolicyExpander:
                             Action(
                                 action=action,
                                 resource=statement.get(PolicyElement.RESOURCE),
-                                not_resource=statement.get(PolicyElement.NOTRESOURCE),
+                                not_resources=tuple(
+                                    statement.get(PolicyElement.NOTRESOURCE) or ()
+                                ),
                                 condition=statement.get(PolicyElement.CONDITION),
                                 source=sid,
                             )
@@ -304,7 +288,7 @@ class PolicyExpander:
                 "a",
                 iam_action.action,
                 self._hashable(iam_action.resource),
-                self._hashable(iam_action.not_resource),
+                iam_action.not_resources,
                 iam_action.source,
             )
             cached = self._expansion_cache.get(cache_key)
@@ -326,7 +310,7 @@ class PolicyExpander:
                             service=service,
                             action=f"{service}:{action}",
                             resources=as_list(iam_action.resource),
-                            not_resources=as_list(iam_action.not_resource),
+                            not_resources=list(iam_action.not_resources),
                             condition=iam_action.condition,
                             source=iam_action.source,
                         )
@@ -339,7 +323,7 @@ class PolicyExpander:
                             service=service,
                             action=f"{service}:{action}",
                             resources=as_list(iam_action.resource),
-                            not_resources=as_list(iam_action.not_resource),
+                            not_resources=list(iam_action.not_resources),
                             condition=iam_action.condition,
                             source=iam_action.source,
                         )
@@ -350,7 +334,7 @@ class PolicyExpander:
                     service=service,
                     action=self.normalize_action(iam_action.action),
                     resources=as_list(iam_action.resource),
-                    not_resources=as_list(iam_action.not_resource),
+                    not_resources=list(iam_action.not_resources),
                     condition=iam_action.condition,
                     source=iam_action.source,
                 )
@@ -457,73 +441,25 @@ class PolicyExpander:
         for allow_action_set in allow_actions.values():
             squashed_policies.update(allow_action_set)
 
-        # Arrange by source, action, resource, and not_resource to detect split conditions
-        actions_by_source_action_resource: Dict[
-            Tuple[str, str, Optional[str], Optional[str]], List[Action]
-        ] = defaultdict(list)
-
-        for action_tuple in squashed_policies:
-            source_key = (
-                action_tuple.source,
-                action_tuple.action,
-                action_tuple.resource,
-                action_tuple.not_resource,
-            )
-            actions_by_source_action_resource[source_key].append(action_tuple)
-
-        # Merge conditions for actions from the same source
-        merged_actions: Set[Action] = set()
-        for actions_list in actions_by_source_action_resource.values():
-            if len(actions_list) == 1:
-                merged_actions.add(actions_list[0])
-            else:
-                # Multiple actions with same source/action/resource - merge their conditions
-                merged_condition: Dict[str, Any] = {}
-                for action in sorted(actions_list, key=_condition_sort_key):
-                    if action.condition:
-                        for operator, operator_conditions in action.condition.items():
-                            if operator in merged_condition:
-                                if isinstance(
-                                    merged_condition[operator], dict
-                                ) and isinstance(operator_conditions, dict):
-                                    merged_condition[operator].update(
-                                        operator_conditions
-                                    )
-                            else:
-                                # Copy so we never mutate a shared Action's condition in place.
-                                merged_condition[operator] = (
-                                    dict(operator_conditions)
-                                    if isinstance(operator_conditions, dict)
-                                    else operator_conditions
-                                )
-
-                # Create a new merged action
-                merged_action = Action(
-                    action=actions_list[0].action,
-                    resource=actions_list[0].resource,
-                    not_resource=actions_list[0].not_resource,
-                    condition=merged_condition if merged_condition else None,
-                    source=actions_list[0].source,
-                )
-                merged_actions.add(merged_action)
-
-        # Arrange by Resource/NotResource
+        # Conditions are whole on every action, and actions with different conditions are alternatives:
+        # they become separate statements and are never merged.
         by_resource_notresource: Dict[
-            Tuple[Optional[str], Optional[str]], Dict[Optional[HashableDict], Set[str]]
+            Tuple[Optional[str], Tuple[str, ...]],
+            Dict[Optional[HashableDict], Set[str]],
         ] = defaultdict(lambda: defaultdict(set))
-        for action_tuple in merged_actions:
-            by_resource_notresource[(action_tuple.resource, action_tuple.not_resource)][
-                HashableDict.recursively(action_tuple.condition)
-            ].add(action_tuple.action)
+        for action_tuple in squashed_policies:
+            by_resource_notresource[
+                (action_tuple.resource, action_tuple.not_resources)
+            ][HashableDict.recursively(action_tuple.condition)].add(action_tuple.action)
 
         # Arrange by Action/Condition/NotResource
         by_action_condition_notresource: Dict[
-            Tuple[FrozenSet[str], Optional[HashableDict], Optional[str]], Set[str]
+            Tuple[FrozenSet[str], Optional[HashableDict], Tuple[str, ...]], Set[str]
         ] = defaultdict(set)
         for resource_notresource, condition_actions in by_resource_notresource.items():
             resource, notresource = resource_notresource
             for condition, actions_set in condition_actions.items():
-                key: Tuple[FrozenSet[str], Optional[HashableDict], Optional[str]] = (
+                key: Tuple[FrozenSet[str], Optional[HashableDict], Tuple[str, ...]] = (
                     frozenset(actions_set),
                     condition,
                     notresource,
@@ -546,7 +482,7 @@ class PolicyExpander:
             if resources:
                 statement[PolicyElement.RESOURCE] = sorted([r for r in resources])
             if notresource:
-                statement[PolicyElement.NOTRESOURCE] = as_list(notresource)
+                statement[PolicyElement.NOTRESOURCE] = list(notresource)
             if condition:
                 statement[PolicyElement.CONDITION] = condition
             statements.append(statement)

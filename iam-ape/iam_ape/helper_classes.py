@@ -1,7 +1,7 @@
 import logging
 from collections import namedtuple
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from iam_ape.consts import PolicyElement
 from iam_ape.helper_types import (
@@ -132,9 +132,11 @@ class HashableDict(dict):
 
 @dataclass(unsafe_hash=True)
 class Action:
+    """Allowed (or denied) on `resource` (every resource when None) except `not_resources`, under `condition`."""
+
     action: str
     resource: Optional[str]
-    not_resource: Optional[str]
+    not_resources: Tuple[str, ...]
     condition: Optional[Dict[str, Any]]
     source: str
 
@@ -145,7 +147,7 @@ class Action:
         return {
             PolicyElement.ACTION: self.action,
             PolicyElement.RESOURCE: self.resource,
-            PolicyElement.NOTRESOURCE: self.not_resource,
+            PolicyElement.NOTRESOURCE: list(self.not_resources) or None,
             PolicyElement.CONDITION: self.condition,
             "Source": self.source,
         }
@@ -159,7 +161,7 @@ class IneffectiveAction(Action):
         return {
             PolicyElement.ACTION: self.action,
             PolicyElement.RESOURCE: self.resource,
-            PolicyElement.NOTRESOURCE: self.not_resource,
+            PolicyElement.NOTRESOURCE: list(self.not_resources) or None,
             PolicyElement.CONDITION: self.condition,
             "Source": self.source,
             "DeniedBy": self.denied_by,
