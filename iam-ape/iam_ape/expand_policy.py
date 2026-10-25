@@ -127,7 +127,6 @@ def _append_action(
     not_resources: Optional[List[str]],
     condition: Optional[Dict[str, Any]],
     source: str,
-    explicit_action: bool = False,
 ) -> None:
     def has_wildcard(value: str) -> bool:
         return "*" in value or "?" in value
@@ -155,14 +154,11 @@ def _append_action(
         )
         return any(fnmatchcase(s, resource_service) for s in services)
 
-    def relevant(values: Optional[List[str]], keep_unmatched: bool) -> List[str]:
-        matched = [v for v in values or [] if relevant_resource(v, service)]
-        return matched if matched or not keep_unmatched else values or []
-
-    # A statement naming this action but no resource it can target still meant those resources for it
-    resources = relevant(resources, keep_unmatched=explicit_action)
+    resources = [r for r in resources or [] if relevant_resource(r, service)]
     # A NotResource that can't match the action excludes nothing, so dropping the action would under-report
-    not_resources = relevant(not_resources, keep_unmatched=True)
+    not_resources = [
+        r for r in not_resources or [] if relevant_resource(r, service)
+    ] or (not_resources or [])
 
     for resource in resources:
         if condition:
@@ -357,7 +353,6 @@ class PolicyExpander:
                     not_resources=as_list(iam_action.not_resource),
                     condition=iam_action.condition,
                     source=iam_action.source,
-                    explicit_action=True,
                 )
         except KeyError:  # not a valid action
             logger.debug(f"Got an invalid action: {iam_action.action}")

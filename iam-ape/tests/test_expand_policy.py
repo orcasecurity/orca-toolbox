@@ -60,17 +60,15 @@ def test_unrelated_cross_service_pair_is_dropped() -> None:
     assert _scopes(expanded, "ssm:SendCommand") == {(ec2_instances, None)}
 
 
-def test_named_action_keeps_statement_resources_as_fallback() -> None:
+def test_named_action_does_not_take_resources_of_another_service() -> None:
     expanded = _expand(
         {
             "Effect": "Allow",
-            "Action": ["ssm-guiconnect:StartConnection"],
-            "Resource": [ec2_instances],
+            "Action": ["xray:GetSamplingTargets"],
+            "Resource": ["arn:aws:states:us-west-2:123456789012:*"],
         }
     )
-    assert _scopes(expanded, "ssm-guiconnect:StartConnection") == {
-        (ec2_instances, None)
-    }
+    assert "xray:GetSamplingTargets" not in expanded
 
 
 def test_wildcard_action_does_not_spread_to_other_services() -> None:
