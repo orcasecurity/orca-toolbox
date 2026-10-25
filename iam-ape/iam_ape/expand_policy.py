@@ -4,12 +4,18 @@ import logging
 import re
 import tarfile
 from collections import defaultdict
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple
 
 from requests.structures import CaseInsensitiveDict
 
-from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
+from iam_ape.consts import (
+    AWS_PARTITION_RE,
+    CROSS_SERVICE_RESOURCES,
+    RESOURCE_ARN_RE,
+    PolicyElement,
+    actions_json_location,
+)
 from iam_ape.exceptions import UnknownServiceExepction
 from iam_ape.helper_classes import (
     EXPANSION_CACHE_MAX_WEIGHT,
@@ -56,6 +62,24 @@ def shorten_to_leading_word(actions: FrozenSet[str]) -> Dict[str, Set[str]]:
     return action_mapping
 
 
+# One entry per service: with the default 128 a full pass over the services evicts each before its next use
+@functools.lru_cache(maxsize=None)
+def exact_leading_word_wildcards(actions: FrozenSet[str]) -> Dict[str, Set[str]]:
+    """
+    The leading-word groups whose "Word*", read as AWS reads it (a case-insensitive prefix glob),
+    matches exactly the group's actions. kms "Re" (ReEncryptFrom, ReEncryptTo) is not one of them,
+    as "kms:Re*" also matches ReplicateKey, RetireGrant and RevokeGrant.
+    :param actions: all actions of a service
+    :returns: dict of leading words to actions
+    """
+    return {
+        word: group
+        for word, group in shorten_to_leading_word(actions).items()
+        if sum(action.lower().startswith(word.lower()) for action in actions)
+        == len(group)
+    }
+
+
 def minimize_actions(
     service: str, actions: List[str], all_iam_actions: List[str]
 ) -> List[str]:
@@ -69,15 +93,30 @@ def minimize_actions(
         return [f"{service}:*"]
     if len(actions) == 1:
         return [f"{service}:{actions[0]}"]
-    all_service_wildcards = shorten_to_leading_word(frozenset(all_iam_actions))
+    all_service_wildcards = exact_leading_word_wildcards(frozenset(all_iam_actions))
     statements_wildcards = shorten_to_leading_word(frozenset(actions))
     res = []
     for wildcard, used_actions in statements_wildcards.items():
-        if len(used_actions) == len(all_service_wildcards[wildcard]):
+        if len(used_actions) == len(all_service_wildcards.get(wildcard, ())):
             res.append(f"{service}:{wildcard}*")
         else:
             res.extend([f"{service}:{action}" for action in used_actions])
-    return res
+    return sorted(res)
+
+
+def _condition_sort_key(action: Action) -> str:
+    return json.dumps(action.condition, sort_keys=True)
+
+
+def _ordered_statement(statement: AwsPolicyStatementType) -> AwsPolicyStatementType:
+    elements = (
+        PolicyElement.EFFECT,
+        PolicyElement.ACTION,
+        PolicyElement.RESOURCE,
+        PolicyElement.NOTRESOURCE,
+        PolicyElement.CONDITION,
+    )
+    return {e: statement[e] for e in elements if e in statement}  # type: ignore[return-value,literal-required]
 
 
 def _append_action(
@@ -88,9 +127,14 @@ def _append_action(
     not_resources: Optional[List[str]],
     condition: Optional[Dict[str, Any]],
     source: str,
+    explicit_action: bool = False,
 ) -> None:
+    def has_wildcard(value: str) -> bool:
+        return "*" in value or "?" in value
+
     def relevant_resource(resource: str, action_service: str) -> bool:
-        if resource.lower() in (
+        resource = resource.lower()
+        if resource in (
             "*",
             "arn:*",
             "arn:aws:*",
@@ -98,16 +142,29 @@ def _append_action(
             "arn:aws-us-gov:*",
         ):
             return True
-        if match := RESOURCE_ARN_RE.match(resource):
-            resource_service = match.group("service").lower()
-            if resource_service == "iam" and action_service == "sts":
-                return True
-            return resource_service == action_service.lower()
-        return False
+        match = RESOURCE_ARN_RE.match(resource)
+        if not match:
+            return False
+        partition, resource_service = match.group("partition", "service")
+        if resource_service is None:
+            return has_wildcard(partition)
+        if not has_wildcard(partition) and not AWS_PARTITION_RE.fullmatch(partition):
+            return False
+        services = {action_service.lower()} | CROSS_SERVICE_RESOURCES.get(
+            action_service.lower(), frozenset()
+        )
+        return any(fnmatchcase(s, resource_service) for s in services)
 
-    for resource in resources or []:
-        if not relevant_resource(resource, service):
-            continue
+    def relevant(values: Optional[List[str]], keep_unmatched: bool) -> List[str]:
+        matched = [v for v in values or [] if relevant_resource(v, service)]
+        return matched if matched or not keep_unmatched else values or []
+
+    # A statement naming this action but no resource it can target still meant those resources for it
+    resources = relevant(resources, keep_unmatched=explicit_action)
+    # A NotResource that can't match the action excludes nothing, so dropping the action would under-report
+    not_resources = relevant(not_resources, keep_unmatched=True)
+
+    for resource in resources:
         if condition:
             for key, val in condition.items():
                 res[action].add(
@@ -129,9 +186,7 @@ def _append_action(
                     source=source,
                 )
             )
-    for not_resource in not_resources or []:
-        if not relevant_resource(not_resource, service):
-            continue
+    for not_resource in not_resources:
         if condition:
             for key, val in condition.items():
                 res[action].add(
@@ -302,6 +357,7 @@ class PolicyExpander:
                     not_resources=as_list(iam_action.not_resource),
                     condition=iam_action.condition,
                     source=iam_action.source,
+                    explicit_action=True,
                 )
         except KeyError:  # not a valid action
             logger.debug(f"Got an invalid action: {iam_action.action}")
@@ -428,7 +484,7 @@ class PolicyExpander:
             else:
                 # Multiple actions with same source/action/resource - merge their conditions
                 merged_condition: Dict[str, Any] = {}
-                for action in actions_list:
+                for action in sorted(actions_list, key=_condition_sort_key):
                     if action.condition:
                         for operator, operator_conditions in action.condition.items():
                             if operator in merged_condition:
@@ -515,14 +571,14 @@ class PolicyExpander:
                     final_statements[statement_key].get(PolicyElement.RESOURCE) or []
                 ) + (statement.get(PolicyElement.RESOURCE) or [])
                 if rsrc:
-                    final_statements[statement_key][PolicyElement.RESOURCE] = list(
+                    final_statements[statement_key][PolicyElement.RESOURCE] = sorted(
                         set(rsrc)
                     )
                 not_rsrc = (
                     final_statements[statement_key].get(PolicyElement.NOTRESOURCE) or []
                 ) + (statement.get(PolicyElement.NOTRESOURCE) or [])
                 if not_rsrc:
-                    final_statements[statement_key][PolicyElement.NOTRESOURCE] = list(
+                    final_statements[statement_key][PolicyElement.NOTRESOURCE] = sorted(
                         set(not_rsrc)
                     )
             else:
@@ -538,7 +594,10 @@ class PolicyExpander:
         ):
             policy_res["Statement"] = [admin_statement]
         else:
-            policy_res["Statement"] = list(final_statements.values())
+            policy_res["Statement"] = sorted(
+                (_ordered_statement(s) for s in final_statements.values()),
+                key=lambda statement: json.dumps(statement, sort_keys=True),
+            )
 
         # normalize_policy rewrites scalar condition values into lists in place. A condition can
         # be shared across principals via the caches, so copy it before that happens - but only

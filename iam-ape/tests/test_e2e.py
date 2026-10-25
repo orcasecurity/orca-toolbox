@@ -1,6 +1,8 @@
 import copy
 import json
 import os
+import subprocess
+import sys
 
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.helper_classes import (
@@ -589,3 +591,46 @@ def test_cache_stats_reports_live_cache_weight() -> None:
     assert (
         fresh.cache_stats()["merge"]["entries"] == 0
     ), "merge memo not cleared per evaluator"
+
+
+def print_ordering_role_outputs() -> None:
+    with open(
+        os.path.join(
+            os.path.dirname(__file__),
+            "test_data/test_ordering_authorization_details.json",
+        )
+    ) as f:
+        auth_details = AuthorizationDetails(json.load(f))
+    scp = {
+        "Statement": [
+            {"Effect": "Allow", "Action": ["s3:*", "ec2:*", "kms:*"], "Resource": ["*"]}
+        ]
+    }
+    evaluator = EffectivePolicyEvaluator(
+        auth_details, [PolicyWithSource("scp-b", scp), PolicyWithSource("scp-a", scp)]
+    )
+    res = evaluator.evaluate(
+        arn="arn:aws:iam::123456789012:role/OrderingRole", entity_type=EntityType.role
+    )
+    print(json.dumps(evaluator.policy_expander.shrink_policy(res.allowed_permissions)))
+    print(json.dumps(evaluator.create_json_report(res)))
+
+
+def _outputs_with_hash_seed(seed: int) -> str:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import tests.test_e2e as t; t.print_ordering_role_outputs()",
+        ],
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        env={**os.environ, "PYTHONHASHSEED": str(seed)},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def test_outputs_do_not_depend_on_hash_seed() -> None:
+    outputs = {_outputs_with_hash_seed(seed) for seed in range(6)}
+    assert len(outputs) == 1
