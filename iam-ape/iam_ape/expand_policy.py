@@ -12,7 +12,9 @@ from requests.structures import CaseInsensitiveDict
 from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
 from iam_ape.exceptions import UnknownServiceExepction
 from iam_ape.helper_classes import (
+    EXPANSION_CACHE_MAX_WEIGHT,
     Action,
+    CappedMemoCache,
     HashableDict,
     HashableList,
     PermissionsContainer,
@@ -23,6 +25,16 @@ from iam_ape.helper_types import AwsPolicyStatementType, AwsPolicyType
 
 logger = logging.getLogger("policy expander")
 WORDSPLIT_RE = re.compile(r"(?<=.)(?=[A-Z])")
+
+
+def _to_plain(obj: Any) -> Any:
+    # Deep-copy a condition into plain dict/list (no HashableDict/HashableList), so the copy
+    # carries no memoized _hash that a later in-place mutation (normalize_policy) could leave stale.
+    if isinstance(obj, dict):
+        return {key: _to_plain(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_to_plain(value) for value in obj]
+    return obj
 
 
 class FrozenSetSet:
@@ -151,6 +163,20 @@ class PolicyExpander:
         self._all_service_wildcards: List[str] = [
             f"{k}:*" for k, v in self.all_iam_actions.items() if len(v) > 0
         ]
+        # Instance-scoped (per actions DB) so a refreshed DB starts clean.
+        self._access_levels_cache: Dict[str, List[str]] = {}
+        # Condition-free managed-policy expansions, shared across principals that attach
+        # the same policy. Condition-free Actions are never mutated, so sharing is safe.
+        # These Set[Action] values (a single admin expansion is tens of thousands of Actions)
+        # are the cache's memory, so it is bounded by retained Action count (plus 1 per key),
+        # not entry count.
+        self._expansion_cache: Dict[
+            Tuple[Any, ...], Dict[str, Set[Action]]
+        ] = CappedMemoCache(
+            EXPANSION_CACHE_MAX_WEIGHT,
+            weigh=lambda v: 1 + sum(len(s) for s in v.values()),
+            name="iam_ape expansion cache",
+        )
 
     @staticmethod
     def _init_iam_actions(
@@ -214,7 +240,31 @@ class PolicyExpander:
             denied_permissions=all_actions[PolicyElement.DENY],
         )
 
+    @staticmethod
+    def _hashable(v: Any) -> Any:
+        return tuple(v) if isinstance(v, list) else v
+
     def expand_action(self, iam_action: Action) -> Dict[str, Set[Action]]:
+        cache_key: Optional[Tuple[Any, ...]] = None
+        # Only managed-policy (ARN) sources are content-stable; inline sids are names that
+        # would collide across roles.
+        if iam_action.condition is None and iam_action.source.startswith("arn:"):
+            cache_key = (
+                "a",
+                iam_action.action,
+                self._hashable(iam_action.resource),
+                self._hashable(iam_action.not_resource),
+                iam_action.source,
+            )
+            cached = self._expansion_cache.get(cache_key)
+            if cached is not None:
+                return {k: set(v) for k, v in cached.items()}
+        res = self._expand_action(iam_action)
+        if cache_key is not None:
+            self._expansion_cache[cache_key] = {k: set(v) for k, v in res.items()}
+        return dict(res)
+
+    def _expand_action(self, iam_action: Action) -> Dict[str, Set[Action]]:
         res: Dict[str, Set[Action]] = defaultdict(set)
         try:
             if iam_action.action == PolicyElement.WILDCARD:  # {"Action": ["*"]}
@@ -255,47 +305,69 @@ class PolicyExpander:
                 )
         except KeyError:  # not a valid action
             logger.debug(f"Got an invalid action: {iam_action.action}")
-
         return res
 
     def expand_not_action(
         self, statement: AwsPolicyStatementType, sid: str
     ) -> Dict[str, Set[Action]]:
-        res: Dict[str, Set[Action]] = defaultdict(set)
         notactions: List[str] = statement.get(PolicyElement.NOTACTION) or []
+        cache_key: Optional[Tuple[Any, ...]] = None
+        if statement.get(PolicyElement.CONDITION) is None and sid.startswith("arn:"):
+            cache_key = (
+                "na",
+                tuple(notactions),
+                self._hashable(statement.get(PolicyElement.RESOURCE)),
+                self._hashable(statement.get(PolicyElement.NOTRESOURCE)),
+                sid,
+            )
+            cached = self._expansion_cache.get(cache_key)
+            if cached is not None:
+                return {k: set(v) for k, v in cached.items()}
+        res = self._expand_not_action(notactions, statement, sid)
+        if cache_key is not None:
+            self._expansion_cache[cache_key] = {k: set(v) for k, v in res.items()}
+        return dict(res)
+
+    def _expand_not_action(
+        self, notactions: List[str], statement: AwsPolicyStatementType, sid: str
+    ) -> Dict[str, Set[Action]]:
+        res: Dict[str, Set[Action]] = defaultdict(set)
         if any(
             [notaction == PolicyElement.WILDCARD for notaction in notactions]
         ):  # {"NotAction": ["*"]}
             # This is here as a safeguard. No sane person should write a policy like this. It has no effect.
-            pass
-        else:  # {"NotAction": ["ec2:*", "iam:Get*", "sts:GetCallerIdentity"]}
-            for iam_service, action_dicts in self.all_iam_actions.items():
-                for action in action_dicts.keys():
-                    curr_action = f"{iam_service}:{action}"
-                    curr_action_lower = curr_action.lower()
-                    if any(
-                        [
-                            wildcard_match(curr_action_lower, not_action.lower())
-                            for not_action in notactions
-                        ]
-                    ):
-                        continue
-                    _append_action(
-                        res=res,
-                        action=curr_action,
-                        service=iam_service,
-                        resources=statement.get(PolicyElement.RESOURCE),
-                        not_resources=statement.get(PolicyElement.NOTRESOURCE),
-                        condition=statement.get(PolicyElement.CONDITION),
-                        source=sid,
-                    )
-
+            return res
+        for iam_service, action_dicts in self.all_iam_actions.items():
+            for action in action_dicts.keys():
+                curr_action = f"{iam_service}:{action}"
+                curr_action_lower = curr_action.lower()
+                if any(
+                    [
+                        wildcard_match(curr_action_lower, not_action.lower())
+                        for not_action in notactions
+                    ]
+                ):
+                    continue
+                _append_action(
+                    res=res,
+                    action=curr_action,
+                    service=iam_service,
+                    resources=statement.get(PolicyElement.RESOURCE),
+                    not_resources=statement.get(PolicyElement.NOTRESOURCE),
+                    condition=statement.get(PolicyElement.CONDITION),
+                    source=sid,
+                )
         return res
 
     def get_action_access_levels(self, action: str) -> List[str]:
+        cached = self._access_levels_cache.get(action)
+        if cached is not None:
+            return list(cached)
         service, action_key = action.split(":", maxsplit=1)
         access = self.all_iam_actions[service][action_key]["access"]
-        return [level.strip() for level in access.split(",")] if access else []
+        result = [level.strip() for level in access.split(",")] if access else []
+        self._access_levels_cache[action] = result
+        return list(result)
 
     def deflate_policy_statements(
         self,
@@ -367,7 +439,12 @@ class PolicyExpander:
                                         operator_conditions
                                     )
                             else:
-                                merged_condition[operator] = operator_conditions
+                                # Copy so we never mutate a shared Action's condition in place.
+                                merged_condition[operator] = (
+                                    dict(operator_conditions)
+                                    if isinstance(operator_conditions, dict)
+                                    else operator_conditions
+                                )
 
                 # Create a new merged action
                 merged_action = Action(
@@ -463,4 +540,21 @@ class PolicyExpander:
         else:
             policy_res["Statement"] = list(final_statements.values())
 
+        # normalize_policy rewrites scalar condition values into lists in place. A condition can
+        # be shared across principals via the caches, so copy it before that happens - but only
+        # when it actually holds a scalar (already-normalized conditions, the common case, are
+        # left untouched). The copy is into PLAIN dict/list via _to_plain, NOT deepcopy: a
+        # deepcopy'd HashableDict carries the original's memoized _hash, which normalize's mutation
+        # then leaves stale (equal conditions -> different hash buckets -> split statements). The
+        # isinstance(operator_dict, dict) guard mirrors the merge code above so a malformed
+        # (non-dict) operator value can't raise here and escape to the account-level handler.
+        for statement in policy_res["Statement"]:
+            stmt_condition = statement.get(PolicyElement.CONDITION)
+            if stmt_condition is not None and any(
+                not isinstance(value, list)
+                for operator_dict in stmt_condition.values()
+                if isinstance(operator_dict, dict)
+                for value in operator_dict.values()
+            ):
+                statement[PolicyElement.CONDITION] = _to_plain(stmt_condition)
         return normalize_policy(policy_res)
