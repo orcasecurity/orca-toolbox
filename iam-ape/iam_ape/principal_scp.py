@@ -93,14 +93,9 @@ class Principal:
             undecided.append(
                 USER_ID
             )  # the role's id followed by the caller's session name
-        if org_id:
-            values[PRINCIPAL_ORG_ID] = (org_id,)
-        else:
-            undecided.append(PRINCIPAL_ORG_ID)
-        if org_path:
-            values[PRINCIPAL_ORG_PATHS] = (org_path,)
-        else:
-            undecided.append(PRINCIPAL_ORG_PATHS)
+        org_values, org_undecided = _org_keys(org_id, org_path)
+        values.update(org_values)
+        undecided.extend(org_undecided)
         if entity_type == EntityType.role and _allows_session_tags(entity):
             undecided.append(PRINCIPAL_TAG_PREFIX)
         else:
@@ -110,10 +105,40 @@ class Principal:
                 )
         return cls(values=values, undecided=tuple(undecided))
 
+    @classmethod
+    def root(
+        cls, arn: str, org_id: Optional[str] = None, org_path: Optional[str] = None
+    ) -> "Principal":
+        """The account's root user: no user name and no tags; its user id is the account id."""
+        account = arn.split(":")[4]
+        values: Dict[str, Tuple[str, ...]] = {
+            "aws:principalarn": (arn,),
+            "aws:principalaccount": (account,),
+            "aws:principalisawsservice": ("false",),
+            PRINCIPAL_TYPE: ("Account",),
+            USER_ID: (account,),
+        }
+        org_values, org_undecided = _org_keys(org_id, org_path)
+        return cls(values={**values, **org_values}, undecided=tuple(org_undecided))
+
     def is_undecided(self, key: str) -> bool:
         return any(
             key == u or (u.endswith("/") and key.startswith(u)) for u in self.undecided
         )
+
+
+def _org_keys(
+    org_id: Optional[str], org_path: Optional[str]
+) -> Tuple[Dict[str, Tuple[str, ...]], List[str]]:
+    """The organization keys' values, and the ones left undecided without organization data."""
+    values: Dict[str, Tuple[str, ...]] = {}
+    undecided: List[str] = []
+    for key, value in ((PRINCIPAL_ORG_ID, org_id), (PRINCIPAL_ORG_PATHS, org_path)):
+        if value:
+            values[key] = (value,)
+        else:
+            undecided.append(key)
+    return values, undecided
 
 
 def _allows_session_tags(role: Dict[str, Any]) -> bool:

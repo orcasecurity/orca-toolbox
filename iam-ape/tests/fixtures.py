@@ -1,8 +1,9 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.helper_classes import PermissionsContainer, PolicyWithSource
-from iam_ape.helper_types import EntityType
+from iam_ape.helper_functions import normalize_policy
+from iam_ape.helper_types import AwsPolicyType, EntityType
 
 ACCOUNT = "111111111111"
 ALICE = f"arn:aws:iam::{ACCOUNT}:user/alice"
@@ -121,7 +122,11 @@ def evaluate(
             }
         ),
         scp_levels=[
-            [PolicyWithSource(f"scp-{i}", _document(level))]
+            [
+                PolicyWithSource(
+                    f"scp-{i}", normalize_policy(cast(AwsPolicyType, _document(level)))
+                )
+            ]
             for i, level in enumerate(scp_levels or [])
         ],
     )

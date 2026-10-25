@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from collections import defaultdict
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
@@ -13,7 +14,11 @@ from iam_ape.access import (
 )
 from iam_ape.access import reset_caches as reset_access_caches
 from iam_ape.conditions import reset_caches as reset_condition_caches
-from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
+from iam_ape.exceptions import (
+    EntityNotFoundException,
+    InvalidArnException,
+    PolicyNotFoundException,
+)
 from iam_ape.expand_policy import PolicyExpander
 from iam_ape.helper_classes import (
     Action,
@@ -29,7 +34,7 @@ from iam_ape.helper_functions import (
     reset_merge_condition_cache,
     sort_condition_values,
 )
-from iam_ape.helper_types import EntityType, FinalReportT
+from iam_ape.helper_types import AwsPolicyType, EntityType, FinalReportT
 from iam_ape.policy_variables import for_principal, has_variables
 from iam_ape.principal_scp import (
     Principal,
@@ -41,6 +46,13 @@ from iam_ape.principal_scp import (
 
 logger = logging.getLogger("IAM-APE:evaluator")
 
+ROOT_ARN = re.compile(r"^arn:[a-z0-9-]+:iam::\d{12}:root$")
+ROOT_SOURCE = "AWS account root user"
+ROOT_POLICY: AwsPolicyType = {
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow", "Action": ["*"], "Resource": ["*"]}],
+}
+
 
 def _ineffective(action: Action, denied_by: str) -> IneffectiveAction:
     return IneffectiveAction(
@@ -50,6 +62,24 @@ def _ineffective(action: Action, denied_by: str) -> IneffectiveAction:
         condition=action.condition,
         source=action.source,
         denied_by=denied_by,
+    )
+
+
+def _bounded(
+    allowed: Dict[str, Set[Action]],
+    ineffective: Set[IneffectiveAction],
+    denied: Dict[str, Set[Action]],
+    bounds: List[Tuple[PermissionsContainer, str]],
+) -> PermissionsContainer:
+    """What's left after each boundary or SCP level, in order."""
+    for boundary, name in bounds:
+        allowed, more_ineffective = apply_permission_boundary(allowed, boundary, name)
+        ineffective = ineffective | more_ineffective
+        denied = deep_update(denied, boundary.denied_permissions)
+    return PermissionsContainer(
+        allowed_permissions=allowed,
+        denied_permissions=denied,
+        ineffective_permissions=ineffective,
     )
 
 
@@ -487,7 +517,6 @@ class EffectivePolicyEvaluator:
 
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
-        denied_permissions = direct_permissions.denied_permissions
         bounds: List[Tuple[PermissionsContainer, str]] = []
         if permission_boundary is not None:
             pb_arn = entity_obj["PermissionsBoundary"]["PermissionsBoundaryArn"]
@@ -500,18 +529,29 @@ class EffectivePolicyEvaluator:
                 (level.for_principal(principal), level.name)
                 for level in self.scp_levels
             )
-        for boundary, name in bounds:
-            (
-                final_permissions,
-                more_ineffective_permissions,
-            ) = apply_permission_boundary(final_permissions, boundary, name)
-            ineffective_permissions.update(more_ineffective_permissions)
-            denied_permissions = deep_update(
-                denied_permissions, boundary.denied_permissions
-            )
-
-        return PermissionsContainer(
-            allowed_permissions=final_permissions,
-            denied_permissions=denied_permissions,
-            ineffective_permissions=ineffective_permissions,
+        return _bounded(
+            final_permissions,
+            ineffective_permissions,
+            direct_permissions.denied_permissions,
+            bounds,
         )
+
+    def evaluate_root(self, arn: str) -> PermissionsContainer:
+        """The account's root user, by the ARN the credential report gives it (`arn:<partition>:iam::<account>:root`).
+
+        It isn't in the authorization details: it can do everything, limited by the SCPs unless this is the
+        management account. No permissions boundary can be attached to it.
+        """
+        if not ROOT_ARN.match(arn):
+            raise InvalidArnException("arn:<partition>:iam::<account>:root", arn)
+        full_access = self.policy_expander.expand_policies(
+            [PolicyWithSource(ROOT_SOURCE, normalize_policy(ROOT_POLICY))]
+        )
+        bounds: List[Tuple[PermissionsContainer, str]] = []
+        if not self.is_management_account:
+            principal = Principal.root(arn, self.org_id, self.org_path)
+            bounds = [
+                (level.for_principal(principal), level.name)
+                for level in self.scp_levels
+            ]
+        return _bounded(full_access.allowed_permissions, set(), {}, bounds)
