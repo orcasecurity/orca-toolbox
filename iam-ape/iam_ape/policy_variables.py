@@ -58,6 +58,29 @@ def _resolved_list(values: Union[str, List[str]], principal: Principal) -> List[
     return [v for v in resolved if v is not None]
 
 
+def _resolved_condition_value(value: Any, principal: Principal) -> Any:
+    # a value that matches nothing for this principal is left as written
+    if not isinstance(value, str):
+        return value
+    resolved = resolve(value, principal)
+    return value if resolved is None else resolved
+
+
+def _resolved_condition(
+    condition: Dict[str, Dict[str, Any]], principal: Principal
+) -> Dict[str, Dict[str, Any]]:
+    return {
+        operator: {
+            key: [
+                _resolved_condition_value(v, principal)
+                for v in (values if isinstance(values, list) else [values])
+            ]
+            for key, values in keys.items()
+        }
+        for operator, keys in condition.items()
+    }
+
+
 def _resolved_statement(
     statement: AwsPolicyStatementType, principal: Principal
 ) -> Optional[AwsPolicyStatementType]:
@@ -75,22 +98,9 @@ def _resolved_statement(
             resolved.pop("NotResource")
             resolved["Resource"] = ["*"]
     if statement.get("Condition"):
-        condition: Dict[str, Dict[str, Any]] = {}
-        for operator, keys in (statement["Condition"] or {}).items():
-            condition[operator] = {}
-            for key, values in keys.items():
-                substituted = [
-                    resolve(v, principal) if isinstance(v, str) else v
-                    for v in (values if isinstance(values, list) else [values])
-                ]
-                # a value that matches nothing for this principal is left as written
-                condition[operator][key] = [
-                    s if s is not None else o
-                    for s, o in zip(
-                        substituted, values if isinstance(values, list) else [values]
-                    )
-                ]
-        resolved["Condition"] = condition
+        resolved["Condition"] = _resolved_condition(
+            statement["Condition"] or {}, principal
+        )
     return resolved
 
 

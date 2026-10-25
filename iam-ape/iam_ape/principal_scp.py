@@ -15,16 +15,20 @@ from iam_ape.helper_types import AwsPolicyStatementType, EntityType
 
 SERVICE_LINKED_ROLE_PATH = "/aws-service-role/"
 PRINCIPAL_TAG_PREFIX = "aws:principaltag/"
+PRINCIPAL_ORG_ID = "aws:principalorgid"
+PRINCIPAL_ORG_PATHS = "aws:principalorgpaths"
+PRINCIPAL_TYPE = "aws:principaltype"
+USER_ID = "aws:userid"
 PRINCIPAL_KEYS = frozenset(
     {
         "aws:principalarn",
         "aws:principalaccount",
-        "aws:principalorgid",
-        "aws:principalorgpaths",
-        "aws:principaltype",
+        PRINCIPAL_ORG_ID,
+        PRINCIPAL_ORG_PATHS,
+        PRINCIPAL_TYPE,
         "aws:principalisawsservice",
         "aws:username",
-        "aws:userid",
+        USER_ID,
     }
 )
 
@@ -80,23 +84,23 @@ class Principal:
         }
         undecided: List[str] = []
         if entity_type == EntityType.user:
-            values["aws:principaltype"] = ("User",)
+            values[PRINCIPAL_TYPE] = ("User",)
             values["aws:username"] = (entity.get("UserName", arn.split("/")[-1]),)
             if entity.get("UserId"):
-                values["aws:userid"] = (entity["UserId"],)
+                values[USER_ID] = (entity["UserId"],)
         else:
-            values["aws:principaltype"] = ("AssumedRole",)
+            values[PRINCIPAL_TYPE] = ("AssumedRole",)
             undecided.append(
-                "aws:userid"
+                USER_ID
             )  # the role's id followed by the caller's session name
         if org_id:
-            values["aws:principalorgid"] = (org_id,)
+            values[PRINCIPAL_ORG_ID] = (org_id,)
         else:
-            undecided.append("aws:principalorgid")
+            undecided.append(PRINCIPAL_ORG_ID)
         if org_path:
-            values["aws:principalorgpaths"] = (org_path,)
+            values[PRINCIPAL_ORG_PATHS] = (org_path,)
         else:
-            undecided.append("aws:principalorgpaths")
+            undecided.append(PRINCIPAL_ORG_PATHS)
         if entity_type == EntityType.role and _allows_session_tags(entity):
             undecided.append(PRINCIPAL_TAG_PREFIX)
         else:

@@ -55,6 +55,46 @@ def _literal_suffix(pattern: str) -> str:
     return re.split(r"[*?]", pattern)[-1]
 
 
+def _ends_compatible(first: str, second: str) -> bool:
+    """Whether the literal text before the first and after the last wildcard lets both match one resource."""
+    first_prefix, second_prefix = _literal_prefix(first), _literal_prefix(second)
+    first_suffix, second_suffix = _literal_suffix(first), _literal_suffix(second)
+    return (
+        first_prefix.startswith(second_prefix) or second_prefix.startswith(first_prefix)
+    ) and (first_suffix.endswith(second_suffix) or second_suffix.endswith(first_suffix))
+
+
+class _Common:
+    """Patterns for what first[i:] and second[j:] both match, memoized per (i, j)."""
+
+    def __init__(self, first: str, second: str) -> None:
+        self.first, self.second = first, second
+        self.memo: Dict[Tuple[int, int], FrozenSet[str]] = {}
+
+    def __call__(self, i: int, j: int) -> FrozenSet[str]:
+        if (i, j) not in self.memo:
+            self.memo[(i, j)] = self._step(i, j)
+        return self.memo[(i, j)]
+
+    def _step(self, i: int, j: int) -> FrozenSet[str]:
+        first, second = self.first, self.second
+        if i == len(first) or j == len(second):
+            rest = second[j:] if i == len(first) else first[i:]
+            return frozenset({""}) if set(rest) <= {"*"} else frozenset()
+        a, b = first[i], second[j]
+        if a == "*" and b == "*":
+            # whichever star stops first, the other one goes on matching
+            return frozenset("*" + t for t in self(i + 1, j) | self(i, j + 1))
+        if a == "*":
+            return self(i + 1, j) | {b + t for t in self(i, j + 1)}
+        if b == "*":
+            return self(i, j + 1) | {a + t for t in self(i + 1, j)}
+        if a == b or "?" in (a, b):
+            char = b if a == "?" else a
+            return frozenset(char + t for t in self(i + 1, j + 1))
+        return frozenset()
+
+
 @functools.lru_cache(maxsize=100_000)
 def intersection(first: str, second: str) -> Tuple[str, ...]:
     """Patterns matching exactly the resources both match; empty when none does."""
@@ -66,42 +106,9 @@ def intersection(first: str, second: str) -> Tuple[str, ...]:
         c in second for c in _WILDCARDS
     ):
         return ()
-    first_prefix, second_prefix = _literal_prefix(first), _literal_prefix(second)
-    first_suffix, second_suffix = _literal_suffix(first), _literal_suffix(second)
-    if not (
-        first_prefix.startswith(second_prefix) or second_prefix.startswith(first_prefix)
-    ) or not (
-        first_suffix.endswith(second_suffix) or second_suffix.endswith(first_suffix)
-    ):
+    if not _ends_compatible(first, second):
         return ()
-
-    memo: Dict[Tuple[int, int], FrozenSet[str]] = {}
-
-    def common(i: int, j: int) -> FrozenSet[str]:
-        """Patterns for what first[i:] and second[j:] both match."""
-        if (i, j) in memo:
-            return memo[(i, j)]
-        if i == len(first) or j == len(second):
-            rest = second[j:] if i == len(first) else first[i:]
-            found = frozenset({""}) if set(rest) <= {"*"} else frozenset()
-        elif first[i] == "*" and second[j] == "*":
-            # whichever star stops first, the other one goes on matching
-            found = frozenset(
-                "*" + tail for tail in common(i + 1, j) | common(i, j + 1)
-            )
-        elif first[i] == "*":
-            found = common(i + 1, j) | {second[j] + t for t in common(i, j + 1)}
-        elif second[j] == "*":
-            found = common(i, j + 1) | {first[i] + t for t in common(i + 1, j)}
-        elif first[i] == second[j] or "?" in (first[i], second[j]):
-            char = second[j] if first[i] == "?" else first[i]
-            found = frozenset(char + tail for tail in common(i + 1, j + 1))
-        else:
-            found = frozenset()
-        memo[(i, j)] = found
-        return found
-
-    patterns = {_collapse(p) for p in common(0, 0)}
+    patterns = {_collapse(p) for p in _Common(first, second)(0, 0)}
     kept = sorted(
         p for p in patterns if not any(o != p and covers(o, p) for o in patterns)
     )

@@ -105,37 +105,29 @@ def _flip_bool(values: Tuple[str, ...]) -> Optional[Tuple[str, ...]]:
     return None
 
 
-@functools.lru_cache(maxsize=100_000)
-def negate(clause: Clause) -> Optional[Clauses]:
-    """The conjunction that holds exactly when the clause doesn't; None when it can't be expressed."""
-    operator, key, values = clause
-    qualifier, base, if_exists = _split(operator)
+def _negate_null(
+    operator: str, key: str, values: Tuple[str, ...], qualifier: str
+) -> Optional[Clauses]:
+    flipped = _flip_bool(values)
+    return ((operator, key, flipped),) if flipped and not qualifier else None
 
-    if base == "Null":
-        flipped = _flip_bool(values)
-        return ((operator, key, flipped),) if flipped and not qualifier else None
 
-    if base == "Bool":
-        if qualifier:
-            return None
-        flipped = _flip_bool(values)
-        if flipped is None:  # true or false: holds whenever the key is there
-            return (("Null", key, ("true",)),)
-        if if_exists:  # absent, or the other value
-            return (("Bool", key, flipped),)
-        return (("BoolIfExists", key, flipped),)
-
-    negated = CONDITIONS_NEGATIONS.get(base)
-    if negated is None:
-        return None
-
-    if qualifier == "ForAnyValue" and not if_exists:
-        return ((f"ForAllValues:{negated}", key, values),)
-    if qualifier == "ForAllValues" and not if_exists:
-        return ((f"ForAnyValue:{negated}", key, values),)
+def _negate_bool(
+    key: str, values: Tuple[str, ...], qualifier: str, if_exists: bool
+) -> Optional[Clauses]:
     if qualifier:
         return None
+    flipped = _flip_bool(values)
+    if flipped is None:  # true or false: holds whenever the key is there
+        return (("Null", key, ("true",)),)
+    if if_exists:  # absent, or the other value
+        return (("Bool", key, flipped),)
+    return (("BoolIfExists", key, flipped),)
 
+
+def _negate_single(
+    base: str, negated: str, key: str, values: Tuple[str, ...], if_exists: bool
+) -> Clauses:
     if if_exists:  # (absent or X) negated: present and not X
         if negated in _TRUE_WHEN_ABSENT:
             return (("Null", key, ("false",)), (negated, key, values))
@@ -146,6 +138,74 @@ def negate(clause: Clause) -> Optional[Clauses]:
     return ((f"{negated}IfExists", key, values),)
 
 
+_SET_NEGATIONS = {"ForAnyValue": "ForAllValues", "ForAllValues": "ForAnyValue"}
+
+
+@functools.lru_cache(maxsize=100_000)
+def negate(clause: Clause) -> Optional[Clauses]:
+    """The conjunction that holds exactly when the clause doesn't; None when it can't be expressed."""
+    operator, key, values = clause
+    qualifier, base, if_exists = _split(operator)
+    if base == "Null":
+        return _negate_null(operator, key, values, qualifier)
+    if base == "Bool":
+        return _negate_bool(key, values, qualifier, if_exists)
+    negated = CONDITIONS_NEGATIONS.get(base)
+    if negated is None:
+        return None
+    if qualifier:
+        if if_exists or qualifier not in _SET_NEGATIONS:
+            return None
+        return ((f"{_SET_NEGATIONS[qualifier]}:{negated}", key, values),)
+    return _negate_single(base, negated, key, values, if_exists)
+
+
+class _Unsatisfiable(Exception):
+    pass
+
+
+def _merged_values(
+    operator: str, existing: Tuple[str, ...], values: Tuple[str, ...]
+) -> Tuple[str, ...]:
+    """The values of two clauses with the same operator on one key, as one clause."""
+    _, base, _ = _split(operator)
+    if base in _EXACT:
+        merged = tuple(sorted(set(existing) & set(values)))
+    elif base in _EXACT_IGNORE_CASE:
+        kept = {v.lower() for v in values}
+        merged = tuple(sorted(v for v in existing if v.lower() in kept))
+    elif base in _EXCLUDING:
+        merged = tuple(sorted(set(existing) | set(values)))
+    elif base == "Null":
+        if {v.lower() for v in existing} != {v.lower() for v in values}:
+            raise _Unsatisfiable
+        merged = existing
+    else:
+        # Two range or pattern clauses on one key (NumericLessThan, StringLike, IpAddress, ...) can't be
+        # written as one. Keeping the first allows more than both together would: the only approximation
+        # in this module, and it never removes access.
+        merged = existing
+    if not merged:
+        raise _Unsatisfiable
+    return merged
+
+
+_Slots = Dict[Tuple[str, str], Clause]
+
+
+def _remove_complements(by_operator_key: _Slots) -> None:
+    """Drop the values a clause requires and its complement on the same key excludes."""
+    for (operator, lowered_key), (_, key, values) in list(by_operator_key.items()):
+        complement = _COMPLEMENT.get(operator)
+        if complement and (complement, lowered_key) in by_operator_key:
+            excluded = set(by_operator_key[(complement, lowered_key)][2])
+            remaining = tuple(v for v in values if v not in excluded)
+            if not remaining:
+                raise _Unsatisfiable
+            by_operator_key[(operator, lowered_key)] = (operator, key, remaining)
+            del by_operator_key[(complement, lowered_key)]
+
+
 @functools.lru_cache(maxsize=100_000)
 def conjoin(first: Clauses, second: Clauses) -> Optional[Clauses]:
     """Both conditions together; None when no request can meet them."""
@@ -153,44 +213,16 @@ def conjoin(first: Clauses, second: Clauses) -> Optional[Clauses]:
         return second
     if not second:
         return first
-    by_operator_key: Dict[Tuple[str, str], Tuple[str, str, Tuple[str, ...]]] = {}
-    for operator, key, values in first + second:
-        slot = (operator, key.lower())
-        if slot not in by_operator_key:
+    by_operator_key: _Slots = {}
+    try:
+        for operator, key, values in first + second:
+            slot = (operator, key.lower())
+            if slot in by_operator_key:
+                values = _merged_values(operator, by_operator_key[slot][2], values)
             by_operator_key[slot] = (operator, key, values)
-            continue
-        _, _, existing = by_operator_key[slot]
-        _, base, _ = _split(operator)
-        if base in _EXACT:
-            values = tuple(sorted(set(existing) & set(values)))
-        elif base in _EXACT_IGNORE_CASE:
-            kept = {v.lower() for v in values}
-            values = tuple(sorted(v for v in existing if v.lower() in kept))
-        elif base in _EXCLUDING:
-            values = tuple(sorted(set(existing) | set(values)))
-        elif base == "Null":
-            if {v.lower() for v in existing} != {v.lower() for v in values}:
-                return None
-            values = existing
-        else:
-            # Two range or pattern clauses on one key (NumericLessThan, StringLike, IpAddress, ...) can't be
-            # written as one. Keeping the first allows more than both together would: the only approximation
-            # in this module, and it never removes access.
-            values = existing
-        if not values:
-            return None
-        by_operator_key[slot] = (operator, key, values)
-
-    # A value both required and excluded on one key
-    for (operator, lowered_key), (_, key, values) in list(by_operator_key.items()):
-        complement = _COMPLEMENT.get(operator)
-        if complement and (complement, lowered_key) in by_operator_key:
-            excluded = set(by_operator_key[(complement, lowered_key)][2])
-            remaining = tuple(v for v in values if v not in excluded)
-            if not remaining:
-                return None
-            by_operator_key[(operator, lowered_key)] = (operator, key, remaining)
-            del by_operator_key[(complement, lowered_key)]
+        _remove_complements(by_operator_key)
+    except _Unsatisfiable:
+        return None
     return tuple(sorted(by_operator_key.values()))
 
 
