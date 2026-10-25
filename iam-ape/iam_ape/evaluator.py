@@ -532,6 +532,7 @@ class EffectivePolicyEvaluator:
         self.org_id = org_id
         self.org_path = org_path
         self.is_management_account = is_management_account
+        self._boundaries: Dict[str, PermissionsContainer] = {}
 
     def cache_stats(self) -> Dict[str, Dict[str, Any]]:
         """Per-cache footprint for memory diagnostics — log alongside RSS at a given principal
@@ -754,6 +755,8 @@ class EffectivePolicyEvaluator:
         if pb_arn := entity.get("PermissionsBoundary", {}).get(
             "PermissionsBoundaryArn"
         ):
+            if pb_arn in self._boundaries:
+                return self._boundaries[pb_arn]
             policy = PolicyWithSource(
                 source=pb_arn,
                 policy=get_default_policy_for_managed_policy(
@@ -761,6 +764,7 @@ class EffectivePolicyEvaluator:
                 ),
             )
             permissions = self.policy_expander.expand_policies([policy])
+            self._boundaries[pb_arn] = permissions
 
         return permissions
 
