@@ -1,0 +1,191 @@
+{
+  "UserDetailList": [],
+  "GroupDetailList": [],
+  "RoleDetailList": [
+    {
+      "Arn": "arn:aws:iam::123456789012:role/OrderingRole",
+      "RoleName": "OrderingRole",
+      "AttachedManagedPolicies": [
+        {
+          "PolicyName": "Shared",
+          "PolicyArn": "arn:aws:iam::123456789012:policy/Shared"
+        }
+      ],
+      "RolePolicyList": [
+        {
+          "PolicyName": "Inline",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "s3:GetObject",
+                  "s3:PutObject",
+                  "s3:DeleteObject",
+                  "s3:ListBucket",
+                  "ec2:DescribeInstances",
+                  "ec2:StartInstances",
+                  "ec2:StopInstances"
+                ],
+                "Resource": [
+                  "arn:aws:s3:::c/*",
+                  "arn:aws:s3:::a/*",
+                  "arn:aws:s3:::b/*",
+                  "*"
+                ],
+                "Condition": {
+                  "StringNotEquals": {
+                    "aws:RequestedRegion": [
+                      "us-west-2"
+                    ]
+                  },
+                  "Bool": {
+                    "aws:SecureTransport": [
+                      "true"
+                    ]
+                  },
+                  "IpAddress": {
+                    "aws:SourceIp": [
+                      "10.0.0.0/8"
+                    ]
+                  }
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "kms:Decrypt"
+                ],
+                "NotResource": [
+                  "arn:aws:kms:*:*:key/x"
+                ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "s3:GetObject"
+                ],
+                "Resource": [
+                  "*"
+                ],
+                "Condition": {
+                  "StringEquals": {
+                    "aws:PrincipalTag/team": [
+                      "red"
+                    ]
+                  }
+                }
+              },
+              {
+                "Effect": "Deny",
+                "Action": [
+                  "s3:DeleteObject"
+                ],
+                "Resource": [
+                  "*"
+                ]
+              },
+              {
+                "Effect": "Deny",
+                "Action": [
+                  "ec2:StopInstances"
+                ],
+                "Resource": [
+                  "*"
+                ],
+                "Condition": {
+                  "StringEquals": {
+                    "aws:RequestedRegion": [
+                      "eu-west-1",
+                      "ap-south-1"
+                    ]
+                  }
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "sqs:SendMessage",
+                  "sqs:ReceiveMessage"
+                ],
+                "Resource": [
+                  "*"
+                ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "s3:PutObjectAcl"
+                ],
+                "Resource": [
+                  "arn:aws:s3:::e/*",
+                  "arn:aws:s3:::d/*"
+                ]
+              },
+              {
+                "Effect": "Deny",
+                "Action": [
+                  "s3:PutObjectAcl"
+                ],
+                "Resource": [
+                  "arn:aws:s3:::e/x*",
+                  "arn:aws:s3:::d/x*"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "Policies": [
+    {
+      "Arn": "arn:aws:iam::123456789012:policy/Shared",
+      "PolicyVersionList": [
+        {
+          "IsDefaultVersion": true,
+          "Document": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "kms:Decrypt"
+                ],
+                "NotResource": [
+                  "arn:aws:kms:*:*:key/y"
+                ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "s3:GetObject"
+                ],
+                "Resource": [
+                  "*"
+                ],
+                "Condition": {
+                  "StringEquals": {
+                    "aws:PrincipalTag/team": [
+                      "blue"
+                    ]
+                  }
+                }
+              },
+              {
+                "Effect": "Deny",
+                "Action": [
+                  "s3:DeleteObject"
+                ],
+                "Resource": [
+                  "*"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
