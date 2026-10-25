@@ -6,7 +6,7 @@ from iam_ape.evaluator import AuthorizationDetails, EffectivePolicyEvaluator
 from iam_ape.helper_classes import PolicyWithSource
 from iam_ape.helper_functions import normalize_policy
 from iam_ape.helper_types import AwsPolicyType, EntityType
-from iam_ape.principal_scp import Principal, decide_clause, deny_for_principal
+from iam_ape.principal_scp import Principal, decide_clause, statement_for_principal
 
 ACCOUNT = "111111111111"
 DATA_ROLE = f"arn:aws:iam::{ACCOUNT}:role/data"
@@ -253,7 +253,7 @@ class TestPrincipalConditions:
 
     def test_group_keeps_every_clause(self) -> None:
         statement = self.DENY_S3_EXCEPT_ADMINS_OUTSIDE_US_EAST_1.policy["Statement"][0]
-        assert deny_for_principal(statement, None) == statement
+        assert statement_for_principal(statement, None) == statement
 
     def test_same_outcome_shares_one_expansion(self) -> None:
         roles = [_role(DATA_ROLE), _role(f"arn:aws:iam::{ACCOUNT}:role/data-2")]

@@ -189,10 +189,18 @@ def decide_clause(
     return all(results) if qualifier == "ForAllValues" else any(results)
 
 
-def deny_for_principal(
+def has_principal_keys(statement: AwsPolicyStatementType) -> bool:
+    return any(
+        is_principal_key(key)
+        for keys in (statement.get("Condition") or {}).values()
+        for key in keys
+    )
+
+
+def statement_for_principal(
     statement: AwsPolicyStatementType, principal: Optional[Principal]
 ) -> Optional[AwsPolicyStatementType]:
-    """The deny as it applies to this principal: None when it can't apply, otherwise the statement with
+    """The statement as it applies to this principal: None when it can't apply, otherwise the statement with
     only the clauses the principal doesn't decide. A group (no principal) keeps every clause."""
     if principal is None:
         return statement
@@ -215,6 +223,20 @@ def deny_for_principal(
     return resolved
 
 
+def policy_for_principal(
+    policy: PolicyWithSource, principal: Optional[Principal]
+) -> PolicyWithSource:
+    """The policy with the principal's own condition keys decided."""
+    if principal is None or not policy.policy:
+        return policy
+    statements = [
+        resolved
+        for statement in policy.policy.get("Statement", [])
+        if (resolved := statement_for_principal(statement, principal)) is not None
+    ]
+    return PolicyWithSource(policy.source, {**policy.policy, "Statement": statements})
+
+
 def _union(containers: Iterable[PermissionsContainer]) -> PermissionsContainer:
     union = PermissionsContainer(allowed_permissions={}, denied_permissions={})
     for container in containers:
@@ -232,16 +254,13 @@ class ScpLevel:
 
     def __init__(self, policies: List[PolicyWithSource], expander: Any) -> None:
         self._expander = expander
+        self.name = min(policy.source for policy in policies)
         static: List[PolicyWithSource] = []
         self._per_principal: List[Tuple[str, AwsPolicyStatementType]] = []
         for policy in policies:
             kept: List[AwsPolicyStatementType] = []
             for statement in policy.policy.get("Statement", []):
-                if statement.get("Effect") == "Deny" and any(
-                    is_principal_key(key)
-                    for keys in (statement.get("Condition") or {}).values()
-                    for key in keys
-                ):
+                if statement.get("Effect") == "Deny" and has_principal_keys(statement):
                     self._per_principal.append((policy.source, statement))
                 else:
                     kept.append(statement)
@@ -262,7 +281,7 @@ class ScpLevel:
             return self._static
         keys: List[str] = []
         for source, statement in self._per_principal:
-            resolved = deny_for_principal(statement, principal)
+            resolved = statement_for_principal(statement, principal)
             if resolved is None:
                 continue
             key = json.dumps([source, resolved], sort_keys=True, default=str)

@@ -24,7 +24,13 @@ from iam_ape.helper_functions import (
 )
 from iam_ape.helper_types import EntityType, FinalReportT
 from iam_ape.policy_variables import for_principal, has_variables
-from iam_ape.principal_scp import Principal, ScpLevel, is_service_linked_role
+from iam_ape.principal_scp import (
+    Principal,
+    ScpLevel,
+    has_principal_keys,
+    is_service_linked_role,
+    policy_for_principal,
+)
 
 logger = logging.getLogger("IAM-APE:evaluator")
 
@@ -69,9 +75,10 @@ def explicitly_deny(
 def apply_permission_boundary(
     allow_actions: Dict[str, Set[Action]],
     permission_boundary: PermissionsContainer,
+    name: Optional[str] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
     """What a boundary (or one SCP level) lets through: the part of each allow one of its allow statements
-    also allows, minus its denies."""
+    also allows, minus its denies. An empty one lets nothing through; `name` then names it."""
 
     def get_pb_id() -> str:
         for permissions in (
@@ -81,6 +88,8 @@ def apply_permission_boundary(
             for values in permissions.values():
                 if values:
                     return min(value.source for value in values)
+        if name:
+            return name
         raise PolicyNotFoundException("Permission Boundary source not found")
 
     outside = f"Permission Boundary: {get_pb_id()}"
@@ -164,7 +173,7 @@ class EffectivePolicyEvaluator:
         self.org_path = org_path
         self.is_management_account = is_management_account
         self._boundaries: Dict[str, PermissionsContainer] = {}
-        self._has_variables: Dict[str, bool] = {}
+        self._reads_principal_cache: Dict[str, bool] = {}
 
     def cache_stats(self) -> Dict[str, Dict[str, Any]]:
         """Per-cache footprint for memory diagnostics — log alongside RSS at a given principal
@@ -395,35 +404,50 @@ class EffectivePolicyEvaluator:
 
     def get_permission_boundary(
         self, entity: Dict[str, Any], principal: Optional[Principal] = None
-    ) -> PermissionsContainer:
+    ) -> Optional[PermissionsContainer]:
+        """None when the entity has no boundary (or its policy is missing)."""
         pb_arn = entity.get("PermissionsBoundary", {}).get("PermissionsBoundaryArn")
         if not pb_arn:
-            return PermissionsContainer()
+            return None
         if pb_arn in self._boundaries:
             return self._boundaries[pb_arn]
         if pb_arn not in self.auth_details.Policy:
             # e.g. an AWS managed policy used only as a boundary: evaluated as if there were none
             logger.warning(f"Permissions boundary {pb_arn} is missing; ignored")
-            return PermissionsContainer()
+            return None
         policy = PolicyWithSource(
             source=pb_arn,
             policy=get_default_policy_for_managed_policy(
                 self.auth_details.Policy.get(pb_arn, {})
             ),
         )
-        if principal is not None and self._policy_has_variables(policy):
+        if principal is not None and self._reads_principal(policy):
             return self.policy_expander.expand_policies(
-                [for_principal(policy, principal)]
+                [self._for_principal(policy, principal)]
             )
         self._boundaries[pb_arn] = self.policy_expander.expand_policies([policy])
         return self._boundaries[pb_arn]
 
-    def _policy_has_variables(self, policy: PolicyWithSource) -> bool:
+    def _reads_principal(self, policy: PolicyWithSource) -> bool:
+        """Whether the policy reads differently per principal: policy variables or principal condition keys."""
+
+        def reads(document: Any) -> bool:
+            return has_variables(document) or any(
+                has_principal_keys(statement)
+                for statement in (document or {}).get("Statement", [])
+            )
+
         if not policy.source.startswith("arn:"):  # inline: its own document
-            return has_variables(policy.policy)
-        if policy.source not in self._has_variables:
-            self._has_variables[policy.source] = has_variables(policy.policy)
-        return self._has_variables[policy.source]
+            return reads(policy.policy)
+        if policy.source not in self._reads_principal_cache:
+            self._reads_principal_cache[policy.source] = reads(policy.policy)
+        return self._reads_principal_cache[policy.source]
+
+    @staticmethod
+    def _for_principal(
+        policy: PolicyWithSource, principal: Optional[Principal]
+    ) -> PolicyWithSource:
+        return policy_for_principal(for_principal(policy, principal), principal)
 
     def evaluate(self, arn: str, entity_type: EntityType) -> PermissionsContainer:
         entity_obj = getattr(self.auth_details, entity_type.value).get(arn)
@@ -446,8 +470,8 @@ class EffectivePolicyEvaluator:
         )
         direct_permissions = self.policy_expander.expand_policies(
             [
-                for_principal(policy, principal)
-                if self._policy_has_variables(policy)
+                self._for_principal(policy, principal)
+                if self._reads_principal(policy)
                 else policy
                 for policy in direct_policies + indirect_policies
             ]
@@ -457,26 +481,27 @@ class EffectivePolicyEvaluator:
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
         denied_permissions = direct_permissions.denied_permissions
-        scp_containers: List[PermissionsContainer] = []
+        bounds: List[Tuple[PermissionsContainer, str]] = []
+        if permission_boundary is not None:
+            pb_arn = entity_obj["PermissionsBoundary"]["PermissionsBoundaryArn"]
+            bounds.append((permission_boundary, pb_arn))
         # SCPs don't apply to service-linked roles or to principals in the management account
         if not self.is_management_account and not is_service_linked_role(
             entity_obj, entity_type
         ):
-            scp_containers = [
-                level.for_principal(principal) for level in self.scp_levels
-            ]
-        for boundary in (permission_boundary, *scp_containers):
-            if boundary.allowed_permissions or boundary.denied_permissions:
-                (
-                    final_permissions,
-                    more_ineffective_permissions,
-                ) = apply_permission_boundary(final_permissions, boundary)
-                ineffective_permissions.update(more_ineffective_permissions)
-
-                denied_permissions = deep_update(
-                    denied_permissions,
-                    boundary.denied_permissions,
-                )
+            bounds.extend(
+                (level.for_principal(principal), level.name)
+                for level in self.scp_levels
+            )
+        for boundary, name in bounds:
+            (
+                final_permissions,
+                more_ineffective_permissions,
+            ) = apply_permission_boundary(final_permissions, boundary, name)
+            ineffective_permissions.update(more_ineffective_permissions)
+            denied_permissions = deep_update(
+                denied_permissions, boundary.denied_permissions
+            )
 
         return PermissionsContainer(
             allowed_permissions=final_permissions,

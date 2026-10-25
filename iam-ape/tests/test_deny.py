@@ -6,7 +6,7 @@ import pytest
 
 from iam_ape.access import apply_denies
 from iam_ape.helper_classes import Action
-from tests.fixtures import evaluate_role, statement
+from tests.fixtures import ROLE, evaluate, evaluate_role, role, statement
 from tests.semantics import actions_allow, condition_keys, policy_allows, probes
 
 GET = "s3:GetObject"
@@ -286,3 +286,61 @@ def test_deny_that_cant_be_negated_keeps_the_allow() -> None:
         [allow(), deny(condition={"BinaryEquals": {"aws:SourceVpc": "QmluYXJ5"}})]
     ).allowed_permissions[GET]
     assert {(a.resource, a.condition) for a in allowed} == {("*", None)}
+
+
+TEAM = "aws:PrincipalTag/team"
+
+
+@pytest.mark.parametrize("team, allowed", [("web", False), ("data", True)])
+def test_P17_deny_on_the_principal_tag_is_decided(team: str, allowed: bool) -> None:
+    container = evaluate_role(
+        [allow(), deny(condition={"StringNotEquals": {TEAM: "data"}})],
+        tags={"team": team},
+    )
+    granted = container.allowed_permissions.get(GET, set())
+    assert {(a.resource, a.condition) for a in granted} == (
+        {("*", None)} if allowed else set()
+    )
+
+
+@pytest.mark.parametrize("team, allowed", [("web", False), ("data", True)])
+def test_allow_on_the_principal_tag_is_decided(team: str, allowed: bool) -> None:
+    container = evaluate_role(
+        [allow(condition={"StringEquals": {TEAM: "data"}})], tags={"team": team}
+    )
+    granted = container.allowed_permissions.get(GET, set())
+    assert {(a.resource, a.condition) for a in granted} == (
+        {("*", None)} if allowed else set()
+    )
+
+
+def test_boundary_on_the_principal_tag_is_decided() -> None:
+    container = evaluate_role(
+        [allow()],
+        boundary=[allow(condition={"StringEquals": {TEAM: "data"}})],
+        tags={"team": "web"},
+    )
+    assert GET not in container.allowed_permissions
+
+
+def test_session_tags_leave_the_principal_tag_undecided() -> None:
+    auth = {
+        "RoleDetailList": [
+            role(
+                [allow(), deny(condition={"StringNotEquals": {TEAM: "data"}})],
+                tags={"team": "web"},
+                session_tags=True,
+            )
+        ]
+    }
+    granted = evaluate(auth, ROLE).allowed_permissions[GET]
+    assert {json.dumps(a.condition) for a in granted} == {
+        json.dumps({"StringEquals": {TEAM: ["data"]}})
+    }
+
+
+def test_scp_level_without_an_allow_for_the_principal_allows_nothing() -> None:
+    # the level's only statement is a deny that doesn't apply to this role; with no allow, AWS allows nothing
+    auth = {"RoleDetailList": [role([allow()], tags={"team": "data"})]}
+    scp = [deny(condition={"StringNotEquals": {TEAM: "data"}})]
+    assert GET not in evaluate(auth, ROLE, scp_levels=[scp]).allowed_permissions
