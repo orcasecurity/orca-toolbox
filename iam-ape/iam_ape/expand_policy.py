@@ -313,11 +313,11 @@ class PolicyExpander:
             )
             cached = self._expansion_cache.get(cache_key)
             if cached is not None:
-                return {k: set(v) for k, v in cached.items()}
-        res = self._expand_action(iam_action)
+                return cached
+        res = dict(self._expand_action(iam_action))
         if cache_key is not None:
-            self._expansion_cache[cache_key] = {k: set(v) for k, v in res.items()}
-        return dict(res)
+            self._expansion_cache[cache_key] = res
+        return res
 
     def _expand_action(self, iam_action: Action) -> Dict[str, Set[Action]]:
         res: Dict[str, Set[Action]] = defaultdict(set)
