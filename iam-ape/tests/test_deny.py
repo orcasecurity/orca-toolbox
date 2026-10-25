@@ -151,6 +151,22 @@ CASES = {
         allow(),
         deny(condition={"ForAnyValue:StringEquals": {"aws:TagKeys": ["secret"]}}),
     ],
+    "region lock (ForAnyValue IfExists)": [
+        allow(),
+        deny(
+            condition={
+                "ForAnyValue:StringNotEqualsIfExists": {
+                    "aws:RequestedRegion": ["us-east-1", "eu-west-1"]
+                }
+            }
+        ),
+    ],
+    "ForAllValues IfExists deny": [
+        allow(),
+        deny(
+            condition={"ForAllValues:StringEqualsIfExists": {"aws:TagKeys": ["secret"]}}
+        ),
+    ],
     "ForAllValues deny": [
         allow(),
         deny(condition={"ForAllValues:StringEquals": {"aws:TagKeys": ["secret"]}}),

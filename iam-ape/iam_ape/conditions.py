@@ -141,6 +141,19 @@ def _negate_single(
 _SET_NEGATIONS = {"ForAnyValue": "ForAllValues", "ForAllValues": "ForAnyValue"}
 
 
+def _negate_set(
+    qualifier: str, negated: str, key: str, values: Tuple[str, ...], if_exists: bool
+) -> Optional[Clauses]:
+    if qualifier not in _SET_NEGATIONS:
+        return None
+    clause = (f"{_SET_NEGATIONS[qualifier]}:{negated}", key, values)
+    # ForAnyValue...IfExists also holds when the key is absent, so its negation needs the key present;
+    # ForAllValues already holds when it is absent, so IfExists changes nothing there
+    if if_exists and qualifier == "ForAnyValue":
+        return (("Null", key, ("false",)), clause)
+    return (clause,)
+
+
 @functools.lru_cache(maxsize=100_000)
 def negate(clause: Clause) -> Optional[Clauses]:
     """The conjunction that holds exactly when the clause doesn't; None when it can't be expressed."""
@@ -154,9 +167,7 @@ def negate(clause: Clause) -> Optional[Clauses]:
     if negated is None:
         return None
     if qualifier:
-        if if_exists or qualifier not in _SET_NEGATIONS:
-            return None
-        return ((f"{_SET_NEGATIONS[qualifier]}:{negated}", key, values),)
+        return _negate_set(qualifier, negated, key, values, if_exists)
     return _negate_single(base, negated, key, values, if_exists)
 
 
