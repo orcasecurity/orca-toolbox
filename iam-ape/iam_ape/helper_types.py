@@ -35,7 +35,7 @@ class EntityType(Enum):
 class ActionDict(TypedDict):
     Action: str
     Resource: Optional[str]
-    NotResource: Optional[str]
+    NotResource: Optional[List[str]]
     Condition: Optional[Dict[str, Any]]
     Source: str
 

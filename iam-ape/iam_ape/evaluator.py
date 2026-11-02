@@ -1,10 +1,18 @@
 import json
 import logging
 from collections import defaultdict
-from dataclasses import replace
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
-from iam_ape.consts import PolicyElement
+from iam_ape.access import (
+    Denies,
+    apply_denies,
+    intersect,
+    is_unrestricted,
+    prepare_denies,
+    prune,
+)
+from iam_ape.access import reset_caches as reset_access_caches
+from iam_ape.conditions import reset_caches as reset_condition_caches
 from iam_ape.exceptions import EntityNotFoundException, PolicyNotFoundException
 from iam_ape.expand_policy import PolicyExpander
 from iam_ape.helper_classes import (
@@ -16,440 +24,102 @@ from iam_ape.helper_classes import (
 from iam_ape.helper_functions import (
     deep_update,
     get_default_policy_for_managed_policy,
-    merge_condition,
+    merge_condition_cache_info,
     normalize_policy,
-    wildcard_match,
+    reset_merge_condition_cache,
+    sort_condition_values,
 )
 from iam_ape.helper_types import EntityType, FinalReportT
+from iam_ape.policy_variables import for_principal, has_variables
+from iam_ape.principal_scp import (
+    Principal,
+    ScpLevel,
+    has_principal_keys,
+    is_service_linked_role,
+    policy_for_principal,
+)
 
 logger = logging.getLogger("IAM-APE:evaluator")
 
 
-def should_deny(
-    iam_action: Action, denied_actions: Dict[str, Set[Action]]
-) -> Tuple[bool, Set[Action], Optional[str]]:
-    """
-    Check if an action is denied by a list of denied actions
-    :param iam_action:
-    :param denied_actions:
-    :return: denied, partially_denied_actions, source
-    """
-    res = set()
-    partially_denied = False
-
-    for denied_action in denied_actions.get(iam_action.action, []):
-
-        if iam_action == denied_action:
-            return True, set(), denied_action.source
-
-        if iam_action.resource:
-
-            if denied_action.resource:
-                if iam_action.resource == denied_action.resource:
-                    if not denied_action.condition:
-                        return True, set(), denied_action.source
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=iam_action.resource,
-                            not_resource=None,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
-                            ),
-                            source=iam_action.source,
-                        )
-                    )
-                elif wildcard_match(
-                    iam_action.resource, denied_action.resource
-                ):  # denied Resource > allowed Resource
-                    if not denied_action.condition:
-                        return True, set(), denied_action.source
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=iam_action.resource,
-                            not_resource=None,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
-                            ),
-                            source=iam_action.source,
-                        )
-                    )
-                elif wildcard_match(
-                    denied_action.resource, iam_action.resource
-                ):  # allowed Resource > denied Resource
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=None
-                            if iam_action.resource == PolicyElement.WILDCARD
-                            else iam_action.resource,
-                            not_resource=denied_action.resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
-                            ),
-                            source=iam_action.source,
-                        )
-                    )
-                else:  # scopes don't overlap
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=None
-                            if iam_action.resource == PolicyElement.WILDCARD
-                            else iam_action.resource,
-                            not_resource=denied_action.resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
-                            ),
-                            source=iam_action.source,
-                        )
-                    )
-
-            if denied_action.not_resource:
-                if denied_action.not_resource == iam_action.resource:
-                    pass
-                elif wildcard_match(
-                    iam_action.resource, denied_action.not_resource
-                ):  # denied NotResource > allowed Resource
-                    pass
-                elif wildcard_match(
-                    denied_action.not_resource, iam_action.resource
-                ):  # denied NotResource < allowed Resource
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=denied_action.not_resource,
-                            not_resource=iam_action.not_resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
-                            ),
-                            source=iam_action.source,
-                        )
-                    )
-
-        if iam_action.not_resource:
-
-            if denied_action.resource:
-                if denied_action.resource == iam_action.not_resource:
-                    pass
-                elif wildcard_match(
-                    denied_action.resource, iam_action.not_resource
-                ):  # allowed NotResource > denied Resource
-                    pass
-                elif wildcard_match(
-                    iam_action.not_resource, denied_action.resource
-                ):  # denied Resource > allowed NotResource
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=iam_action.resource,
-                            not_resource=denied_action.resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
-                            ),
-                            source=iam_action.source,
-                        )
-                    )
-                else:  # scopes don't overlap
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=iam_action.resource,
-                            not_resource=denied_action.resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
-                            ),
-                            source=iam_action.source,
-                        )
-                    )
-
-            if denied_action.not_resource:
-                if denied_action.not_resource == iam_action.not_resource:
-                    if not denied_action.condition:
-                        return True, set(), denied_action.source
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=None,
-                            not_resource=iam_action.not_resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
-                            ),
-                            source=iam_action.source,
-                        )
-                    )
-                elif wildcard_match(
-                    denied_action.not_resource, iam_action.not_resource
-                ):  # allowed NotResource > denied NotResource
-                    pass
-                elif wildcard_match(
-                    iam_action.not_resource, denied_action.not_resource
-                ):  # denied NotResource > allowed NotResource
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=iam_action.resource,
-                            not_resource=denied_action.not_resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
-                            ),
-                            source=iam_action.source,
-                        )
-                    )
-                else:  # scopes don't overlap
-                    partially_denied = True
-                    res.add(
-                        Action(
-                            action=iam_action.action,
-                            resource=denied_action.not_resource,
-                            not_resource=iam_action.not_resource,
-                            condition=merge_condition(
-                                iam_action.condition, denied_action.condition
-                            ),
-                            source=iam_action.source,
-                        )
-                    )
-
-    if partially_denied:
-        return False, res, None
-    return False, {iam_action}, None
+def _ineffective(action: Action, denied_by: str) -> IneffectiveAction:
+    return IneffectiveAction(
+        action=action.action,
+        resource=action.resource,
+        not_resources=action.not_resources,
+        condition=action.condition,
+        source=action.source,
+        denied_by=denied_by,
+    )
 
 
 def explicitly_deny(
     permissions: PermissionsContainer,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
+    """Each allow after every deny of its action, applied one after another."""
     final_actions_dict: Dict[str, Set[Action]] = defaultdict(set)
     ineffective_permissions: Set[IneffectiveAction] = set()
+    denied_permissions = permissions.denied_permissions
+    prepared: Dict[str, Denies] = {}
     for action_key, action_values in permissions.allowed_permissions.items():
         for action_value in action_values:
-            denied, new_action_values, denied_by = should_deny(
-                action_value, permissions.denied_permissions
+            denies = denied_permissions.get(action_value.action)
+            if not denies:
+                final_actions_dict[action_key].add(action_value)
+                continue
+            if action_value.action not in prepared:
+                prepared[action_value.action] = prepare_denies(denies)
+            remaining, denied_by = apply_denies(
+                action_value, prepared[action_value.action]
             )
-            if not denied:
-                final_actions_dict[action_key].update(new_action_values)
+            if remaining:
+                final_actions_dict[action_key].update(remaining)
             elif denied_by:
-                ineffective_permissions.add(
-                    IneffectiveAction(
-                        action=action_value.action,
-                        resource=action_value.resource,
-                        not_resource=action_value.not_resource,
-                        condition=action_value.condition,
-                        source=action_value.source,
-                        denied_by=denied_by,
-                    )
-                )
-
+                ineffective_permissions.add(_ineffective(action_value, denied_by))
     return final_actions_dict, ineffective_permissions
 
 
 def apply_permission_boundary(
     allow_actions: Dict[str, Set[Action]],
     permission_boundary: PermissionsContainer,
+    name: Optional[str] = None,
 ) -> Tuple[Dict[str, Set[Action]], Set[IneffectiveAction]]:
-    def permit(at: Action, bt: Action) -> Action:
-        return replace(
-            at,
-            condition=merge_condition(at.condition, bt.condition, negate=False),
-        )
-
-    def deny(at: Action, boundary_id: str) -> IneffectiveAction:
-        return IneffectiveAction(
-            action=at.action,
-            resource=at.resource,
-            not_resource=at.not_resource,
-            condition=at.condition,
-            source=at.source,
-            denied_by=f"Permission Boundary: {boundary_id}",
-        )
+    """What a boundary (or one SCP level) lets through: the part of each allow one of its allow statements
+    also allows, minus its denies. An empty one lets nothing through; `name` then names it."""
 
     def get_pb_id() -> str:
-        if permission_boundary.allowed_permissions:
-            for values in permission_boundary.allowed_permissions.values():
-                for value in values:
-                    return value.source
-        for values in permission_boundary.denied_permissions.values():
-            for value in values:
-                return value.source
+        for permissions in (
+            permission_boundary.allowed_permissions,
+            permission_boundary.denied_permissions,
+        ):
+            for values in permissions.values():
+                if values:
+                    return min(value.source for value in values)
+        if name:
+            return name
         raise PolicyNotFoundException("Permission Boundary source not found")
 
-    permission_boundary_id = get_pb_id()
-
-    new_allow_actions = defaultdict(set)
+    outside = f"Permission Boundary: {get_pb_id()}"
+    new_allow_actions: Dict[str, Set[Action]] = defaultdict(set)
     ineffective_permissions: Set[IneffectiveAction] = set()
     for action_key, action_values in allow_actions.items():
-        if action_key not in permission_boundary.allowed_permissions.keys():
-            # action is outside of boundary
-            for action_value in action_values:
-                ineffective_permissions.add(deny(action_value, permission_boundary_id))
-        else:
-            for action_tuple in action_values:
-                if action_tuple in permission_boundary.allowed_permissions[action_key]:
-                    new_allow_actions[action_key].add(
-                        action_tuple
-                    )  # action is permitted without change
-                    continue
-                for boundary_tuple in permission_boundary.allowed_permissions[
-                    action_key
-                ]:
-
-                    if action_tuple.resource and boundary_tuple.resource:
-                        if action_tuple.resource == boundary_tuple.resource:
-                            new_allow_actions[action_key].add(
-                                permit(action_tuple, boundary_tuple)
-                            )  # action is permitted
-                        elif wildcard_match(
-                            action_tuple.resource, boundary_tuple.resource
-                        ):
-                            new_allow_actions[action_key].add(
-                                permit(action_tuple, boundary_tuple)
-                            )  # action is permitted
-                        elif wildcard_match(
-                            boundary_tuple.resource, action_tuple.resource
-                        ):
-                            new_allow_actions[action_key].add(
-                                replace(
-                                    action_tuple,
-                                    resource=boundary_tuple.resource,
-                                    condition=merge_condition(
-                                        action_tuple.condition,
-                                        boundary_tuple.condition,
-                                        negate=False,
-                                    ),
-                                )
-                            )
-                        else:  # action is not permitted
-                            ineffective_permissions.add(
-                                deny(action_tuple, permission_boundary_id)
-                            )
-
-                    elif action_tuple.resource and boundary_tuple.not_resource:
-                        if (
-                            action_tuple.resource == boundary_tuple.not_resource
-                        ):  # action is not permitted
-                            ineffective_permissions.add(
-                                deny(action_tuple, permission_boundary_id)
-                            )
-                        elif wildcard_match(
-                            action_tuple.resource, boundary_tuple.not_resource
-                        ):  # action is not permitted
-                            ineffective_permissions.add(
-                                deny(action_tuple, permission_boundary_id)
-                            )
-                        elif wildcard_match(
-                            boundary_tuple.not_resource, action_tuple.resource
-                        ):  # action is partially permitted
-                            new_allow_actions[action_key].add(
-                                replace(
-                                    action_tuple,
-                                    not_resource=boundary_tuple.not_resource,
-                                    condition=merge_condition(
-                                        action_tuple.condition,
-                                        boundary_tuple.condition,
-                                        negate=False,
-                                    ),
-                                )
-                            )
-                        else:  # action is permitted
-                            new_allow_actions[action_key].add(
-                                permit(action_tuple, boundary_tuple)
-                            )
-
-                    elif action_tuple.not_resource and boundary_tuple.resource:
-                        if (
-                            action_tuple.not_resource == boundary_tuple.resource
-                        ):  # action is not permitted
-                            ineffective_permissions.add(
-                                deny(action_tuple, permission_boundary_id)
-                            )
-                        elif wildcard_match(
-                            action_tuple.not_resource, boundary_tuple.resource
-                        ):  # action is partially permitted
-                            new_allow_actions[action_key].add(
-                                replace(
-                                    action_tuple,
-                                    resource=boundary_tuple.resource,
-                                    condition=merge_condition(
-                                        action_tuple.condition,
-                                        boundary_tuple.condition,
-                                        negate=False,
-                                    ),
-                                )
-                            )
-                        elif wildcard_match(
-                            boundary_tuple.resource, action_tuple.not_resource
-                        ):  # action is not permitted
-                            ineffective_permissions.add(
-                                deny(action_tuple, permission_boundary_id)
-                            )
-                        else:  # action is partially permitted
-                            new_allow_actions[action_key].add(
-                                replace(
-                                    action_tuple,
-                                    resource=boundary_tuple.resource,
-                                    not_resource=None,
-                                    condition=merge_condition(
-                                        action_tuple.condition,
-                                        boundary_tuple.condition,
-                                        negate=False,
-                                    ),
-                                )
-                            )
-
-                    elif action_tuple.not_resource and boundary_tuple.not_resource:
-                        if (
-                            action_tuple.not_resource == boundary_tuple.resource
-                        ):  # action is permitted
-                            new_allow_actions[action_key].add(
-                                permit(action_tuple, boundary_tuple)
-                            )
-                        elif wildcard_match(
-                            action_tuple.not_resource, boundary_tuple.not_resource
-                        ):  # action is partially permitted
-                            new_allow_actions[action_key].add(
-                                replace(
-                                    action_tuple,
-                                    not_resource=boundary_tuple.not_resource,
-                                )
-                            )
-                        elif wildcard_match(
-                            boundary_tuple.not_resource, action_tuple.not_resource
-                        ):  # action is permitted
-                            new_allow_actions[action_key].add(
-                                permit(action_tuple, boundary_tuple)
-                            )
-                        else:  # action is partially permitted
-                            new_allow_actions[action_key].add(
-                                replace(
-                                    action_tuple,
-                                    not_resource=boundary_tuple.not_resource,
-                                    condition=merge_condition(
-                                        action_tuple.condition,
-                                        boundary_tuple.condition,
-                                        negate=False,
-                                    ),
-                                )
-                            )
-                            new_allow_actions[action_key].add(
-                                replace(
-                                    action_tuple,
-                                    not_resource=action_tuple.not_resource,
-                                    condition=merge_condition(
-                                        action_tuple.condition,
-                                        boundary_tuple.condition,
-                                        negate=False,
-                                    ),
-                                )
-                            )
+        bounds = permission_boundary.allowed_permissions.get(action_key)
+        for action_value in action_values:
+            if not bounds:
+                ineffective_permissions.add(_ineffective(action_value, outside))
+                continue
+            if any(is_unrestricted(bound) for bound in bounds):
+                new_allow_actions[action_key].add(action_value)
+                continue
+            kept = {
+                kept_action
+                for bound in bounds
+                for kept_action in intersect(action_value, bound)
+            }
+            if kept:
+                new_allow_actions[action_key].update(prune(kept))
+            else:
+                ineffective_permissions.add(_ineffective(action_value, outside))
 
     allowed, denied_ineffective = explicitly_deny(
         PermissionsContainer(
@@ -487,14 +157,51 @@ class EffectivePolicyEvaluator:
         authorization_details: AuthorizationDetails,
         scp_policies: Optional[List[PolicyWithSource]] = None,
         policy_expander: Optional[PolicyExpander] = None,
+        scp_levels: Optional[List[List[PolicyWithSource]]] = None,
+        org_id: Optional[str] = None,
+        org_path: Optional[str] = None,
+        is_management_account: bool = False,
     ) -> None:
         self.auth_details = authorization_details
         self.policy_expander = policy_expander or PolicyExpander()
-        self.scp_policy = (
-            self.policy_expander.expand_policies(scp_policies)
-            if scp_policies
-            else PermissionsContainer()
-        )
+        # The merge-condition memo is a module-global lru_cache; clear it here so its retention is
+        # per-account (released at the account boundary), not accumulated process-wide.
+        reset_merge_condition_cache()
+        reset_access_caches()
+        reset_condition_caches()
+        # scp_policies is a single level (the SCPs attached to the account); scp_levels is every level of
+        # the organization, root first. A principal must be allowed by each level.
+        if scp_levels is None:
+            scp_levels = [scp_policies] if scp_policies else []
+        self.scp_levels = [
+            ScpLevel(level, self.policy_expander) for level in scp_levels if level
+        ]
+        self.org_id = org_id
+        self.org_path = org_path
+        self.is_management_account = is_management_account
+        self._boundaries: Dict[str, PermissionsContainer] = {}
+        self._reads_principal_cache: Dict[str, bool] = {}
+
+    def cache_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Per-cache footprint for memory diagnostics — log alongside RSS at a given principal
+        count to see live cache size and whether a cap has been reached. Covers the expansion
+        cache and the (per-account-cleared) merge-condition memo."""
+        stats: Dict[str, Dict[str, Any]] = {}
+        exp = self.policy_expander._expansion_cache
+        stats["expansion"] = {
+            "entries": len(exp),
+            "weight": getattr(exp, "_weight", None),
+            "capped": getattr(exp, "_capped", None),
+        }
+        info = merge_condition_cache_info()
+        stats["merge"] = {
+            "entries": info.currsize,
+            "hits": info.hits,
+            "misses": info.misses,
+            # maxsize is None for an unbounded lru_cache; an unbounded memo is never capped.
+            "capped": info.maxsize is not None and info.currsize >= info.maxsize,
+        }
+        return stats
 
     def create_json_report(
         self,
@@ -504,10 +211,32 @@ class EffectivePolicyEvaluator:
         def action_to_service(action: str) -> str:
             return action.split(":")[0]
 
-        def serialize_set(obj):
-            if isinstance(obj, set):
-                return list(obj)
-            return obj
+        def _finalize(obj: Any) -> None:
+            # In-place finalize, replacing a json.loads(json.dumps(...)) round-trip. The upload
+            # path's json handler str()s sets (writing a Python repr, not a JSON array), so the
+            # source / denied_by / NotResource sets MUST become lists here; sets stay sets during
+            # the build above for dedup and are converted only now. Done in place (not by
+            # building a copy) so the peak holds one structure, not the original + a ~330 MB
+            # string + a parallel copy. defaultdict factories are cleared so the report reads
+            # like the plain dict the round-trip produced (no auto-vivification on a missing key);
+            # HashableDict/HashableList conditions are left as-is (they serialize as dict/list).
+            if isinstance(obj, dict):
+                if isinstance(obj, defaultdict):
+                    obj.default_factory = None
+                items = sorted(obj.items(), key=lambda item: str(item[0]))
+                obj.clear()
+                for key, value in items:
+                    if isinstance(value, set):
+                        value = sorted(value, key=str)
+                    else:
+                        _finalize(value)
+                    obj[key] = value
+            elif isinstance(obj, list):
+                for i, value in enumerate(obj):
+                    if isinstance(value, set):
+                        obj[i] = sorted(value, key=str)
+                    else:
+                        _finalize(value)
 
         """
         {
@@ -583,47 +312,59 @@ class EffectivePolicyEvaluator:
             if include_denied_permissions
             else ("allowed_permissions",)
         )
+        # An action allowed on a resource under several alternative conditions is allowed when any of them
+        # holds: unconditionally if one is empty, else under the one condition or the list of them.
+        alternatives: Dict[Tuple[str, str, str, str, str], Set[Any]] = defaultdict(set)
         for section in sections:
             for action_tuple_set in getattr(permissions_container, section).values():
                 for action_tuple in action_tuple_set:
                     service = action_to_service(action_tuple.action)
                     resource = action_tuple.resource or "*"
                     curr_context = res[section][service][resource]  # type: ignore[literal-required]
-                    if action_tuple.not_resource:
-                        if curr_context.get("NotResource"):
-                            curr_context["NotResource"].add(action_tuple.not_resource)
-                        else:
-                            curr_context["NotResource"] = {action_tuple.not_resource}
+                    if action_tuple.not_resources:
+                        curr_context.setdefault("NotResource", set()).update(
+                            action_tuple.not_resources
+                        )
                     for access_level in self.policy_expander.get_action_access_levels(
                         action_tuple.action
                     ):
-                        if cond := merge_condition(
-                            curr_context[access_level]
-                            .get(action_tuple.action, {})
-                            .get("Condition", {}),
-                            action_tuple.condition,
-                            negate=False,
-                            hashable=False,
-                        ):
-                            curr_context[access_level][action_tuple.action][
-                                "Condition"
-                            ] = cond
                         curr_context[access_level][action_tuple.action]["source"].add(
                             action_tuple.source
                         )
+                        alternatives[
+                            (
+                                section,
+                                service,
+                                resource,
+                                access_level,
+                                action_tuple.action,
+                            )
+                        ].add(action_tuple.condition or None)
+        for (
+            section,
+            service,
+            resource,
+            level,
+            action,
+        ), conditions in alternatives.items():
+            entry = res[section][service][resource][level][action]  # type: ignore[literal-required]
+            if None in conditions:
+                entry["Condition"] = None
+            elif len(conditions) == 1:
+                entry["Condition"] = sort_condition_values(dict(next(iter(conditions))))
+            else:
+                entry["Condition"] = sorted(
+                    (sort_condition_values(dict(c)) for c in conditions),
+                    key=lambda c: json.dumps(c, sort_keys=True, default=str),
+                )
 
         for action_tuple in permissions_container.ineffective_permissions:
             service = action_to_service(action_tuple.action)
             resource = action_tuple.resource or "*"
-            if action_tuple.not_resource:
-                if res["ineffective_permissions"][service][resource].get("NotResource"):
-                    res["ineffective_permissions"][service][resource][
-                        "NotResource"
-                    ].add(action_tuple.not_resource)
-                else:
-                    res["ineffective_permissions"][service][resource]["NotResource"] = {
-                        action_tuple.not_resource
-                    }
+            if action_tuple.not_resources:
+                res["ineffective_permissions"][service][resource].setdefault(
+                    "NotResource", set()
+                ).update(action_tuple.not_resources)
             for access_level in self.policy_expander.get_action_access_levels(
                 action_tuple.action
             ):
@@ -631,7 +372,7 @@ class EffectivePolicyEvaluator:
                     action_tuple.action
                 ]["denied_by"].add(action_tuple.denied_by)
 
-        res = json.loads(json.dumps(res, default=serialize_set))
+        _finalize(res)
 
         return res
 
@@ -666,22 +407,54 @@ class EffectivePolicyEvaluator:
                 policy = get_default_policy_for_managed_policy(policy_obj)
                 yield PolicyWithSource(policy=policy, source=policy_arn)
             else:
-                PolicyNotFoundException(f"Couldn't find policy {policy_arn}")
+                logger.warning(f"Managed policy {policy_arn} is missing; skipped")
 
-    def get_permission_boundary(self, entity: Dict[str, Any]) -> PermissionsContainer:
-        permissions = PermissionsContainer()
-        if pb_arn := entity.get("PermissionsBoundary", {}).get(
-            "PermissionsBoundaryArn"
-        ):
-            policy = PolicyWithSource(
-                source=pb_arn,
-                policy=get_default_policy_for_managed_policy(
-                    self.auth_details.Policy.get(pb_arn, {})
-                ),
+    def get_permission_boundary(
+        self, entity: Dict[str, Any], principal: Optional[Principal] = None
+    ) -> Optional[PermissionsContainer]:
+        """None when the entity has no boundary (or its policy is missing)."""
+        pb_arn = entity.get("PermissionsBoundary", {}).get("PermissionsBoundaryArn")
+        if not pb_arn:
+            return None
+        if pb_arn in self._boundaries:
+            return self._boundaries[pb_arn]
+        if pb_arn not in self.auth_details.Policy:
+            # e.g. an AWS managed policy used only as a boundary: evaluated as if there were none
+            logger.warning(f"Permissions boundary {pb_arn} is missing; ignored")
+            return None
+        policy = PolicyWithSource(
+            source=pb_arn,
+            policy=get_default_policy_for_managed_policy(
+                self.auth_details.Policy.get(pb_arn, {})
+            ),
+        )
+        if principal is not None and self._reads_principal(policy):
+            return self.policy_expander.expand_policies(
+                [self._for_principal(policy, principal)]
             )
-            permissions = self.policy_expander.expand_policies([policy])
+        self._boundaries[pb_arn] = self.policy_expander.expand_policies([policy])
+        return self._boundaries[pb_arn]
 
-        return permissions
+    def _reads_principal(self, policy: PolicyWithSource) -> bool:
+        """Whether the policy reads differently per principal: policy variables or principal condition keys."""
+
+        def reads(document: Any) -> bool:
+            return has_variables(document) or any(
+                has_principal_keys(statement)
+                for statement in (document or {}).get("Statement", [])
+            )
+
+        if not policy.source.startswith("arn:"):  # inline: its own document
+            return reads(policy.policy)
+        if policy.source not in self._reads_principal_cache:
+            self._reads_principal_cache[policy.source] = reads(policy.policy)
+        return self._reads_principal_cache[policy.source]
+
+    @staticmethod
+    def _for_principal(
+        policy: PolicyWithSource, principal: Optional[Principal]
+    ) -> PolicyWithSource:
+        return policy_for_principal(for_principal(policy, principal), principal)
 
     def evaluate(self, arn: str, entity_type: EntityType) -> PermissionsContainer:
         entity_obj = getattr(self.auth_details, entity_type.value).get(arn)
@@ -699,26 +472,43 @@ class EffectivePolicyEvaluator:
                         self.get_direct_policies(group_obj, EntityType.group)
                     )
 
-        direct_permissions = self.policy_expander.expand_policies(
-            direct_policies + indirect_policies
+        principal = Principal.of(
+            arn, entity_obj, entity_type, self.org_id, self.org_path
         )
-        permission_boundary = self.get_permission_boundary(entity_obj)
+        direct_permissions = self.policy_expander.expand_policies(
+            [
+                self._for_principal(policy, principal)
+                if self._reads_principal(policy)
+                else policy
+                for policy in direct_policies + indirect_policies
+            ]
+        )
+        permission_boundary = self.get_permission_boundary(entity_obj, principal)
 
         final_permissions, ineffective_permissions = explicitly_deny(direct_permissions)
 
         denied_permissions = direct_permissions.denied_permissions
-        for boundary in (permission_boundary, self.scp_policy):
-            if boundary.allowed_permissions or boundary.denied_permissions:
-                (
-                    final_permissions,
-                    more_ineffective_permissions,
-                ) = apply_permission_boundary(final_permissions, boundary)
-                ineffective_permissions.update(more_ineffective_permissions)
-
-                denied_permissions = deep_update(
-                    denied_permissions,
-                    boundary.denied_permissions,
-                )
+        bounds: List[Tuple[PermissionsContainer, str]] = []
+        if permission_boundary is not None:
+            pb_arn = entity_obj["PermissionsBoundary"]["PermissionsBoundaryArn"]
+            bounds.append((permission_boundary, pb_arn))
+        # SCPs don't apply to service-linked roles or to principals in the management account
+        if not self.is_management_account and not is_service_linked_role(
+            entity_obj, entity_type
+        ):
+            bounds.extend(
+                (level.for_principal(principal), level.name)
+                for level in self.scp_levels
+            )
+        for boundary, name in bounds:
+            (
+                final_permissions,
+                more_ineffective_permissions,
+            ) = apply_permission_boundary(final_permissions, boundary, name)
+            ineffective_permissions.update(more_ineffective_permissions)
+            denied_permissions = deep_update(
+                denied_permissions, boundary.denied_permissions
+            )
 
         return PermissionsContainer(
             allowed_permissions=final_permissions,

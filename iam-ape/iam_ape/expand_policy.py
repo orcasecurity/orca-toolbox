@@ -4,15 +4,23 @@ import logging
 import re
 import tarfile
 from collections import defaultdict
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Set, Tuple
 
 from requests.structures import CaseInsensitiveDict
 
-from iam_ape.consts import RESOURCE_ARN_RE, PolicyElement, actions_json_location
+from iam_ape.consts import (
+    AWS_PARTITION_RE,
+    CROSS_SERVICE_RESOURCES,
+    RESOURCE_ARN_RE,
+    PolicyElement,
+    actions_json_location,
+)
 from iam_ape.exceptions import UnknownServiceExepction
 from iam_ape.helper_classes import (
+    EXPANSION_CACHE_MAX_WEIGHT,
     Action,
+    CappedMemoCache,
     HashableDict,
     HashableList,
     PermissionsContainer,
@@ -23,6 +31,16 @@ from iam_ape.helper_types import AwsPolicyStatementType, AwsPolicyType
 
 logger = logging.getLogger("policy expander")
 WORDSPLIT_RE = re.compile(r"(?<=.)(?=[A-Z])")
+
+
+def _to_plain(obj: Any) -> Any:
+    # Deep-copy a condition into plain dict/list (no HashableDict/HashableList), so the copy
+    # carries no memoized _hash that a later in-place mutation (normalize_policy) could leave stale.
+    if isinstance(obj, dict):
+        return {key: _to_plain(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_to_plain(value) for value in obj]
+    return obj
 
 
 class FrozenSetSet:
@@ -44,6 +62,24 @@ def shorten_to_leading_word(actions: FrozenSet[str]) -> Dict[str, Set[str]]:
     return action_mapping
 
 
+# One entry per service: with the default 128 a full pass over the services evicts each before its next use
+@functools.lru_cache(maxsize=None)
+def exact_leading_word_wildcards(actions: FrozenSet[str]) -> Dict[str, Set[str]]:
+    """
+    The leading-word groups whose "Word*", read as AWS reads it (a case-insensitive prefix glob),
+    matches exactly the group's actions. kms "Re" (ReEncryptFrom, ReEncryptTo) is not one of them,
+    as "kms:Re*" also matches ReplicateKey, RetireGrant and RevokeGrant.
+    :param actions: all actions of a service
+    :returns: dict of leading words to actions
+    """
+    return {
+        word: group
+        for word, group in shorten_to_leading_word(actions).items()
+        if sum(action.lower().startswith(word.lower()) for action in actions)
+        == len(group)
+    }
+
+
 def minimize_actions(
     service: str, actions: List[str], all_iam_actions: List[str]
 ) -> List[str]:
@@ -57,15 +93,26 @@ def minimize_actions(
         return [f"{service}:*"]
     if len(actions) == 1:
         return [f"{service}:{actions[0]}"]
-    all_service_wildcards = shorten_to_leading_word(frozenset(all_iam_actions))
+    all_service_wildcards = exact_leading_word_wildcards(frozenset(all_iam_actions))
     statements_wildcards = shorten_to_leading_word(frozenset(actions))
     res = []
     for wildcard, used_actions in statements_wildcards.items():
-        if len(used_actions) == len(all_service_wildcards[wildcard]):
+        if len(used_actions) == len(all_service_wildcards.get(wildcard, ())):
             res.append(f"{service}:{wildcard}*")
         else:
             res.extend([f"{service}:{action}" for action in used_actions])
-    return res
+    return sorted(res)
+
+
+def _ordered_statement(statement: AwsPolicyStatementType) -> AwsPolicyStatementType:
+    elements = (
+        PolicyElement.EFFECT,
+        PolicyElement.ACTION,
+        PolicyElement.RESOURCE,
+        PolicyElement.NOTRESOURCE,
+        PolicyElement.CONDITION,
+    )
+    return {e: statement[e] for e in elements if e in statement}  # type: ignore[return-value,literal-required]
 
 
 def _append_action(
@@ -77,8 +124,14 @@ def _append_action(
     condition: Optional[Dict[str, Any]],
     source: str,
 ) -> None:
+    had_not_resources = bool(not_resources)
+
+    def has_wildcard(value: str) -> bool:
+        return "*" in value or "?" in value
+
     def relevant_resource(resource: str, action_service: str) -> bool:
-        if resource.lower() in (
+        resource = resource.lower()
+        if resource in (
             "*",
             "arn:*",
             "arn:aws:*",
@@ -86,61 +139,53 @@ def _append_action(
             "arn:aws-us-gov:*",
         ):
             return True
-        if match := RESOURCE_ARN_RE.match(resource):
-            resource_service = match.group("service").lower()
-            if resource_service == "iam" and action_service == "sts":
-                return True
-            return resource_service == action_service.lower()
-        return False
+        match = RESOURCE_ARN_RE.match(resource)
+        if not match:
+            return False
+        partition, resource_service = match.group("partition", "service")
+        if resource_service is None:
+            return has_wildcard(partition)
+        if not has_wildcard(partition) and not AWS_PARTITION_RE.fullmatch(partition):
+            return False
+        services = {action_service.lower()} | CROSS_SERVICE_RESOURCES.get(
+            action_service.lower(), frozenset()
+        )
+        return any(fnmatchcase(s, resource_service) for s in services)
 
-    for resource in resources or []:
-        if not relevant_resource(resource, service):
-            continue
-        if condition:
-            for key, val in condition.items():
-                res[action].add(
-                    Action(
-                        action=action,
-                        resource=resource,
-                        not_resource=None,
-                        condition=HashableDict.recursively({key: val}),
-                        source=source,
-                    )
-                )
-        else:
-            res[action].add(
-                Action(
-                    action=action,
-                    resource=resource,
-                    not_resource=None,
-                    condition=None,
-                    source=source,
-                )
+    resources = [r for r in resources or [] if relevant_resource(r, service)]
+    # A NotResource that can't match the action excludes nothing from it
+    not_resources = [r for r in not_resources or [] if relevant_resource(r, service)]
+    full_condition = HashableDict.recursively(condition) if condition else None
+    for resource in resources:
+        res[action].add(
+            Action(
+                action=action,
+                resource=resource,
+                not_resources=(),
+                condition=full_condition,
+                source=source,
             )
-    for not_resource in not_resources or []:
-        if not relevant_resource(not_resource, service):
-            continue
-        if condition:
-            for key, val in condition.items():
-                res[action].add(
-                    Action(
-                        action=action,
-                        resource=None,
-                        not_resource=not_resource,
-                        condition=HashableDict.recursively({key: val}),
-                        source=source,
-                    )
-                )
-        else:
-            res[action].add(
-                Action(
-                    action=action,
-                    resource=None,
-                    not_resource=not_resource,
-                    condition=None,
-                    source=source,
-                )
+        )
+    if not_resources:
+        res[action].add(
+            Action(
+                action=action,
+                resource=None,
+                not_resources=tuple(sorted(set(not_resources))),
+                condition=full_condition,
+                source=source,
             )
+        )
+    elif not resources and had_not_resources:
+        res[action].add(
+            Action(
+                action=action,
+                resource=PolicyElement.WILDCARD,
+                not_resources=(),
+                condition=full_condition,
+                source=source,
+            )
+        )
 
 
 class PolicyExpander:
@@ -151,6 +196,20 @@ class PolicyExpander:
         self._all_service_wildcards: List[str] = [
             f"{k}:*" for k, v in self.all_iam_actions.items() if len(v) > 0
         ]
+        # Instance-scoped (per actions DB) so a refreshed DB starts clean.
+        self._access_levels_cache: Dict[str, List[str]] = {}
+        # Condition-free managed-policy expansions, shared across principals that attach
+        # the same policy. Condition-free Actions are never mutated, so sharing is safe.
+        # These Set[Action] values (a single admin expansion is tens of thousands of Actions)
+        # are the cache's memory, so it is bounded by retained Action count (plus 1 per key),
+        # not entry count.
+        self._expansion_cache: Dict[
+            Tuple[Any, ...], Dict[str, Set[Action]]
+        ] = CappedMemoCache(
+            EXPANSION_CACHE_MAX_WEIGHT,
+            weigh=lambda v: 1 + sum(len(s) for s in v.values()),
+            name="iam_ape expansion cache",
+        )
 
     @staticmethod
     def _init_iam_actions(
@@ -192,7 +251,9 @@ class PolicyExpander:
                             Action(
                                 action=action,
                                 resource=statement.get(PolicyElement.RESOURCE),
-                                not_resource=statement.get(PolicyElement.NOTRESOURCE),
+                                not_resources=tuple(
+                                    statement.get(PolicyElement.NOTRESOURCE) or ()
+                                ),
                                 condition=statement.get(PolicyElement.CONDITION),
                                 source=sid,
                             )
@@ -214,7 +275,31 @@ class PolicyExpander:
             denied_permissions=all_actions[PolicyElement.DENY],
         )
 
+    @staticmethod
+    def _hashable(v: Any) -> Any:
+        return tuple(v) if isinstance(v, list) else v
+
     def expand_action(self, iam_action: Action) -> Dict[str, Set[Action]]:
+        cache_key: Optional[Tuple[Any, ...]] = None
+        # Only managed-policy (ARN) sources are content-stable; inline sids are names that
+        # would collide across roles.
+        if iam_action.condition is None and iam_action.source.startswith("arn:"):
+            cache_key = (
+                "a",
+                iam_action.action,
+                self._hashable(iam_action.resource),
+                iam_action.not_resources,
+                iam_action.source,
+            )
+            cached = self._expansion_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        res = dict(self._expand_action(iam_action))
+        if cache_key is not None:
+            self._expansion_cache[cache_key] = res
+        return res
+
+    def _expand_action(self, iam_action: Action) -> Dict[str, Set[Action]]:
         res: Dict[str, Set[Action]] = defaultdict(set)
         try:
             if iam_action.action == PolicyElement.WILDCARD:  # {"Action": ["*"]}
@@ -225,11 +310,11 @@ class PolicyExpander:
                             service=service,
                             action=f"{service}:{action}",
                             resources=as_list(iam_action.resource),
-                            not_resources=as_list(iam_action.not_resource),
+                            not_resources=list(iam_action.not_resources),
                             condition=iam_action.condition,
                             source=iam_action.source,
                         )
-            elif PolicyElement.WILDCARD in iam_action.action:  # {"Action": ["iam:*"]}
+            elif any(c in iam_action.action for c in "*?"):  # {"Action": ["iam:*"]}
                 service, wildcard_action = iam_action.action.split(":", maxsplit=1)
                 for action in self.all_iam_actions[service].keys():
                     if fnmatch(action.lower(), wildcard_action.lower()):
@@ -238,7 +323,7 @@ class PolicyExpander:
                             service=service,
                             action=f"{service}:{action}",
                             resources=as_list(iam_action.resource),
-                            not_resources=as_list(iam_action.not_resource),
+                            not_resources=list(iam_action.not_resources),
                             condition=iam_action.condition,
                             source=iam_action.source,
                         )
@@ -249,53 +334,75 @@ class PolicyExpander:
                     service=service,
                     action=self.normalize_action(iam_action.action),
                     resources=as_list(iam_action.resource),
-                    not_resources=as_list(iam_action.not_resource),
+                    not_resources=list(iam_action.not_resources),
                     condition=iam_action.condition,
                     source=iam_action.source,
                 )
         except KeyError:  # not a valid action
             logger.debug(f"Got an invalid action: {iam_action.action}")
-
         return res
 
     def expand_not_action(
         self, statement: AwsPolicyStatementType, sid: str
     ) -> Dict[str, Set[Action]]:
-        res: Dict[str, Set[Action]] = defaultdict(set)
         notactions: List[str] = statement.get(PolicyElement.NOTACTION) or []
+        cache_key: Optional[Tuple[Any, ...]] = None
+        if statement.get(PolicyElement.CONDITION) is None and sid.startswith("arn:"):
+            cache_key = (
+                "na",
+                tuple(notactions),
+                self._hashable(statement.get(PolicyElement.RESOURCE)),
+                self._hashable(statement.get(PolicyElement.NOTRESOURCE)),
+                sid,
+            )
+            cached = self._expansion_cache.get(cache_key)
+            if cached is not None:
+                return {k: set(v) for k, v in cached.items()}
+        res = self._expand_not_action(notactions, statement, sid)
+        if cache_key is not None:
+            self._expansion_cache[cache_key] = {k: set(v) for k, v in res.items()}
+        return dict(res)
+
+    def _expand_not_action(
+        self, notactions: List[str], statement: AwsPolicyStatementType, sid: str
+    ) -> Dict[str, Set[Action]]:
+        res: Dict[str, Set[Action]] = defaultdict(set)
         if any(
             [notaction == PolicyElement.WILDCARD for notaction in notactions]
         ):  # {"NotAction": ["*"]}
             # This is here as a safeguard. No sane person should write a policy like this. It has no effect.
-            pass
-        else:  # {"NotAction": ["ec2:*", "iam:Get*", "sts:GetCallerIdentity"]}
-            for iam_service, action_dicts in self.all_iam_actions.items():
-                for action in action_dicts.keys():
-                    curr_action = f"{iam_service}:{action}"
-                    curr_action_lower = curr_action.lower()
-                    if any(
-                        [
-                            wildcard_match(curr_action_lower, not_action.lower())
-                            for not_action in notactions
-                        ]
-                    ):
-                        continue
-                    _append_action(
-                        res=res,
-                        action=curr_action,
-                        service=iam_service,
-                        resources=statement.get(PolicyElement.RESOURCE),
-                        not_resources=statement.get(PolicyElement.NOTRESOURCE),
-                        condition=statement.get(PolicyElement.CONDITION),
-                        source=sid,
-                    )
-
+            return res
+        for iam_service, action_dicts in self.all_iam_actions.items():
+            for action in action_dicts.keys():
+                curr_action = f"{iam_service}:{action}"
+                curr_action_lower = curr_action.lower()
+                if any(
+                    [
+                        wildcard_match(curr_action_lower, not_action.lower())
+                        for not_action in notactions
+                    ]
+                ):
+                    continue
+                _append_action(
+                    res=res,
+                    action=curr_action,
+                    service=iam_service,
+                    resources=statement.get(PolicyElement.RESOURCE),
+                    not_resources=statement.get(PolicyElement.NOTRESOURCE),
+                    condition=statement.get(PolicyElement.CONDITION),
+                    source=sid,
+                )
         return res
 
     def get_action_access_levels(self, action: str) -> List[str]:
+        cached = self._access_levels_cache.get(action)
+        if cached is not None:
+            return list(cached)
         service, action_key = action.split(":", maxsplit=1)
         access = self.all_iam_actions[service][action_key]["access"]
-        return [level.strip() for level in access.split(",")] if access else []
+        result = [level.strip() for level in access.split(",")] if access else []
+        self._access_levels_cache[action] = result
+        return list(result)
 
     def deflate_policy_statements(
         self,
@@ -334,68 +441,25 @@ class PolicyExpander:
         for allow_action_set in allow_actions.values():
             squashed_policies.update(allow_action_set)
 
-        # Arrange by source, action, resource, and not_resource to detect split conditions
-        actions_by_source_action_resource: Dict[
-            Tuple[str, str, Optional[str], Optional[str]], List[Action]
-        ] = defaultdict(list)
-
-        for action_tuple in squashed_policies:
-            source_key = (
-                action_tuple.source,
-                action_tuple.action,
-                action_tuple.resource,
-                action_tuple.not_resource,
-            )
-            actions_by_source_action_resource[source_key].append(action_tuple)
-
-        # Merge conditions for actions from the same source
-        merged_actions: Set[Action] = set()
-        for actions_list in actions_by_source_action_resource.values():
-            if len(actions_list) == 1:
-                merged_actions.add(actions_list[0])
-            else:
-                # Multiple actions with same source/action/resource - merge their conditions
-                merged_condition: Dict[str, Any] = {}
-                for action in actions_list:
-                    if action.condition:
-                        for operator, operator_conditions in action.condition.items():
-                            if operator in merged_condition:
-                                if isinstance(
-                                    merged_condition[operator], dict
-                                ) and isinstance(operator_conditions, dict):
-                                    merged_condition[operator].update(
-                                        operator_conditions
-                                    )
-                            else:
-                                merged_condition[operator] = operator_conditions
-
-                # Create a new merged action
-                merged_action = Action(
-                    action=actions_list[0].action,
-                    resource=actions_list[0].resource,
-                    not_resource=actions_list[0].not_resource,
-                    condition=merged_condition if merged_condition else None,
-                    source=actions_list[0].source,
-                )
-                merged_actions.add(merged_action)
-
-        # Arrange by Resource/NotResource
+        # Conditions are whole on every action, and actions with different conditions are alternatives:
+        # they become separate statements and are never merged.
         by_resource_notresource: Dict[
-            Tuple[Optional[str], Optional[str]], Dict[Optional[HashableDict], Set[str]]
+            Tuple[Optional[str], Tuple[str, ...]],
+            Dict[Optional[HashableDict], Set[str]],
         ] = defaultdict(lambda: defaultdict(set))
-        for action_tuple in merged_actions:
-            by_resource_notresource[(action_tuple.resource, action_tuple.not_resource)][
-                HashableDict.recursively(action_tuple.condition)
-            ].add(action_tuple.action)
+        for action_tuple in squashed_policies:
+            by_resource_notresource[
+                (action_tuple.resource, action_tuple.not_resources)
+            ][HashableDict.recursively(action_tuple.condition)].add(action_tuple.action)
 
         # Arrange by Action/Condition/NotResource
         by_action_condition_notresource: Dict[
-            Tuple[FrozenSet[str], Optional[HashableDict], Optional[str]], Set[str]
+            Tuple[FrozenSet[str], Optional[HashableDict], Tuple[str, ...]], Set[str]
         ] = defaultdict(set)
         for resource_notresource, condition_actions in by_resource_notresource.items():
             resource, notresource = resource_notresource
             for condition, actions_set in condition_actions.items():
-                key: Tuple[FrozenSet[str], Optional[HashableDict], Optional[str]] = (
+                key: Tuple[FrozenSet[str], Optional[HashableDict], Tuple[str, ...]] = (
                     frozenset(actions_set),
                     condition,
                     notresource,
@@ -418,35 +482,34 @@ class PolicyExpander:
             if resources:
                 statement[PolicyElement.RESOURCE] = sorted([r for r in resources])
             if notresource:
-                statement[PolicyElement.NOTRESOURCE] = as_list(notresource)
+                statement[PolicyElement.NOTRESOURCE] = list(notresource)
             if condition:
                 statement[PolicyElement.CONDITION] = condition
             statements.append(statement)
 
         deflated_statements = self.deflate_policy_statements(statements)
 
+        # Statements with the same actions, condition and NotResource can share one Resource list. Any
+        # other merge changes what they allow: "all but a" plus "all but b" is not "all but a and b", and
+        # a NotResource next to a Resource narrows that Resource.
         final_statements: Dict[int, AwsPolicyStatementType] = {}
         for statement in deflated_statements:
             statement_key = hash(
                 (
                     HashableList(statement[PolicyElement.ACTION] or []),
                     HashableDict.recursively(statement.get(PolicyElement.CONDITION)),
+                    HashableList(
+                        sorted(statement.get(PolicyElement.NOTRESOURCE) or [])
+                    ),
+                    PolicyElement.RESOURCE in statement,
                 )
             )
-            if statement_key in final_statements.keys():
-                rsrc = (
-                    final_statements[statement_key].get(PolicyElement.RESOURCE) or []
-                ) + (statement.get(PolicyElement.RESOURCE) or [])
-                if rsrc:
-                    final_statements[statement_key][PolicyElement.RESOURCE] = list(
-                        set(rsrc)
-                    )
-                not_rsrc = (
-                    final_statements[statement_key].get(PolicyElement.NOTRESOURCE) or []
-                ) + (statement.get(PolicyElement.NOTRESOURCE) or [])
-                if not_rsrc:
-                    final_statements[statement_key][PolicyElement.NOTRESOURCE] = list(
-                        set(not_rsrc)
+            if statement_key in final_statements:
+                merged = final_statements[statement_key]
+                if PolicyElement.RESOURCE in statement:
+                    merged[PolicyElement.RESOURCE] = sorted(
+                        set(merged.get(PolicyElement.RESOURCE) or [])
+                        | set(statement.get(PolicyElement.RESOURCE) or [])
                     )
             else:
                 final_statements[statement_key] = statement
@@ -461,6 +524,26 @@ class PolicyExpander:
         ):
             policy_res["Statement"] = [admin_statement]
         else:
-            policy_res["Statement"] = list(final_statements.values())
+            policy_res["Statement"] = sorted(
+                (_ordered_statement(s) for s in final_statements.values()),
+                key=lambda statement: json.dumps(statement, sort_keys=True),
+            )
 
+        # normalize_policy rewrites scalar condition values into lists in place. A condition can
+        # be shared across principals via the caches, so copy it before that happens - but only
+        # when it actually holds a scalar (already-normalized conditions, the common case, are
+        # left untouched). The copy is into PLAIN dict/list via _to_plain, NOT deepcopy: a
+        # deepcopy'd HashableDict carries the original's memoized _hash, which normalize's mutation
+        # then leaves stale (equal conditions -> different hash buckets -> split statements). The
+        # isinstance(operator_dict, dict) guard mirrors the merge code above so a malformed
+        # (non-dict) operator value can't raise here and escape to the account-level handler.
+        for statement in policy_res["Statement"]:
+            stmt_condition = statement.get(PolicyElement.CONDITION)
+            if stmt_condition is not None and any(
+                not isinstance(value, list)
+                for operator_dict in stmt_condition.values()
+                if isinstance(operator_dict, dict)
+                for value in operator_dict.values()
+            ):
+                statement[PolicyElement.CONDITION] = _to_plain(stmt_condition)
         return normalize_policy(policy_res)
