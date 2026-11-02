@@ -1,9 +1,19 @@
 import os
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Dict, FrozenSet, Literal
 
-RESOURCE_ARN_RE = re.compile("arn:(aws|aws-gov|aws-china):(?P<service>[^:]+):.*")
+RESOURCE_ARN_RE = re.compile("arn:(?P<partition>[^:]*)(?::(?P<service>[^:]*))?")
+# aws, aws-cn, aws-us-gov, aws-iso, aws-iso-b, aws-iso-e, aws-iso-f, aws-eusc
+AWS_PARTITION_RE = re.compile("aws(-[a-z]+)*")
+
+# ARN services an action's service is authorized on besides its own, per the AWS Service Authorization Reference
+CROSS_SERVICE_RESOURCES: Dict[str, FrozenSet[str]] = {
+    "ec2-instance-connect": frozenset({"ec2"}),
+    "ssm": frozenset({"ec2", "ecs"}),
+    "ssmmessages": frozenset({"ssm"}),
+    "sts": frozenset({"iam"}),
+}
 
 
 @dataclass(frozen=True)

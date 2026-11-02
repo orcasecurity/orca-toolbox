@@ -203,6 +203,18 @@ def merge_condition(
     return HashableDict.recursively(res) if hashable else res
 
 
+def sort_condition_values(condition: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        operator: {
+            key: sorted(values, key=str) if isinstance(values, list) else values
+            for key, values in keys.items()
+        }
+        if isinstance(keys, dict)
+        else keys
+        for operator, keys in condition.items()
+    }
+
+
 def get_default_policy_for_managed_policy(
     managed_policy_obj: Dict[str, Any]
 ) -> AwsPolicyType:
@@ -227,7 +239,7 @@ def deep_update(
                     updated_mapping[k] = list(updated_mapping[k] + v)
                     # Attempt to remove duplicates
                     try:
-                        updated_mapping[k] = list(set(updated_mapping[k]))
+                        updated_mapping[k] = list(dict.fromkeys(updated_mapping[k]))
                     except TypeError:
                         pass
             else:
