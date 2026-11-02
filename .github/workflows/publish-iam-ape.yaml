@@ -1,0 +1,39 @@
+name: Publish iam-ape to JFrog
+
+# Manual only. workflow_dispatch can be triggered ONLY by users with Write
+# access to this repository, so publishing is limited to maintainers.
+# Scoped to the iam-ape package only (working-directory: iam-ape); no other
+# tool in this repo is built or published.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build & publish iam-ape
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: iam-ape
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build iam-ape
+        run: python -m build
+
+      - name: Publish to JFrog
+        env:
+          TWINE_USERNAME: ${{ secrets.JFROG_RW_USER }}
+          TWINE_PASSWORD: ${{ secrets.JFROG_RW_PASSWORD }}
+          TWINE_REPOSITORY_URL: https://orcasecurity.jfrog.io/artifactory/api/pypi/orca-pypi
+        run: twine upload --skip-existing dist/*
